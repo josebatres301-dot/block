@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Personal household app — any authenticated user (anonymous auth) can read/write
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

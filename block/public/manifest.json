@@ -1,0 +1,10 @@
+{
+  "name": "Block",
+  "short_name": "Block",
+  "description": "12-week training and nutrition tool",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "orientation": "portrait"
+}
