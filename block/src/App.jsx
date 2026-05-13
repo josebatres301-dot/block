@@ -10,16 +10,16 @@ import {
 // ============================================================
 
 const SEED_FOODS = [
-  { name: 'Chicken Breast, cooked', per100g: { calories: 165, protein: 31, fat: 3.6, carbs: 0 }, defaultGrams: 226, timesUsed: 0 },
-  { name: 'Ground Beef 90/10, cooked', per100g: { calories: 217, protein: 26, fat: 11.7, carbs: 0 }, defaultGrams: 113, timesUsed: 0 },
-  { name: 'White Rice, cooked', per100g: { calories: 130, protein: 2.7, fat: 0.3, carbs: 28 }, defaultGrams: 200, timesUsed: 0 },
-  { name: 'Brown Rice, cooked', per100g: { calories: 112, protein: 2.6, fat: 0.9, carbs: 24 }, defaultGrams: 200, timesUsed: 0 },
-  { name: 'Egg, large', per100g: { calories: 155, protein: 13, fat: 11, carbs: 1.1 }, defaultGrams: 50, timesUsed: 0 },
-  { name: 'Greek Yogurt, plain nonfat', per100g: { calories: 59, protein: 10, fat: 0.4, carbs: 3.6 }, defaultGrams: 170, timesUsed: 0 },
-  { name: 'Oats, dry', per100g: { calories: 389, protein: 16.9, fat: 6.9, carbs: 66 }, defaultGrams: 40, timesUsed: 0 },
-  { name: 'Banana', per100g: { calories: 89, protein: 1.1, fat: 0.3, carbs: 23 }, defaultGrams: 118, timesUsed: 0 },
-  { name: 'Olive Oil', per100g: { calories: 884, protein: 0, fat: 100, carbs: 0 }, defaultGrams: 14, timesUsed: 0 },
-  { name: 'Almonds', per100g: { calories: 579, protein: 21, fat: 50, carbs: 22 }, defaultGrams: 28, timesUsed: 0 }
+  { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
+  { name: 'Ground Beef 90/10, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 2.17, protein: 0.26, fat: 0.117, carbs: 0 }, defaultAmount: 113, timesUsed: 0 },
+  { name: 'White Rice, cooked', unitType: 'volume', unitName: 'cup', perUnit: { calories: 205, protein: 4.3, fat: 0.4, carbs: 45 }, defaultAmount: 1, timesUsed: 0 },
+  { name: 'Brown Rice, cooked', unitType: 'volume', unitName: 'cup', perUnit: { calories: 218, protein: 4.5, fat: 1.6, carbs: 45 }, defaultAmount: 1, timesUsed: 0 },
+  { name: 'Egg, large', unitType: 'count', unitName: 'item', perUnit: { calories: 72, protein: 6.3, fat: 4.8, carbs: 0.4 }, defaultAmount: 2, timesUsed: 0 },
+  { name: 'Greek Yogurt, plain nonfat', unitType: 'weight', unitName: 'g', perUnit: { calories: 0.59, protein: 0.10, fat: 0.004, carbs: 0.036 }, defaultAmount: 170, timesUsed: 0 },
+  { name: 'Oats, dry', unitType: 'weight', unitName: 'g', perUnit: { calories: 3.89, protein: 0.169, fat: 0.069, carbs: 0.66 }, defaultAmount: 40, timesUsed: 0 },
+  { name: 'Banana, medium', unitType: 'count', unitName: 'item', perUnit: { calories: 105, protein: 1.3, fat: 0.4, carbs: 27 }, defaultAmount: 1, timesUsed: 0 },
+  { name: 'Olive Oil', unitType: 'volume', unitName: 'tbsp', perUnit: { calories: 119, protein: 0, fat: 13.5, carbs: 0 }, defaultAmount: 1, timesUsed: 0 },
+  { name: 'Almonds', unitType: 'weight', unitName: 'g', perUnit: { calories: 5.79, protein: 0.21, fat: 0.50, carbs: 0.22 }, defaultAmount: 28, timesUsed: 0 }
 ];
 
 const JOSE_PLAN = {
@@ -161,6 +161,27 @@ export default function App() {
           await addDoc(collection(db, 'savedFoods'), food);
         }
       }
+      // Migration: update foods from old per100g shape to new perUnit shape
+      const foodsSnap = await getDocs(collection(db, 'savedFoods'));
+      const existingFoods = foodsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      for (const food of existingFoods) {
+        if (food.perUnit) continue; // already new shape
+        const seed = SEED_FOODS.find(s => s.name === food.name);
+        if (seed) {
+          const { name: _n, timesUsed: _t, ...seedShape } = seed;
+          await updateDoc(doc(db, 'savedFoods', food.id), seedShape);
+        } else {
+          await deleteDoc(doc(db, 'savedFoods', food.id));
+        }
+      }
+      // Ensure all seed foods exist (handles renamed seeds)
+      const currentFoodsSnap = await getDocs(collection(db, 'savedFoods'));
+      const currentNames = new Set(currentFoodsSnap.docs.map(d => d.data().name));
+      for (const seed of SEED_FOODS) {
+        if (!currentNames.has(seed.name)) {
+          await addDoc(collection(db, 'savedFoods'), seed);
+        }
+      }
       if (active) setBootstrapped(true);
     })();
     return () => { active = false; };
@@ -259,7 +280,7 @@ export default function App() {
     const map = { jose: {}, yareli: {} };
     [...allFoodLogs].sort((a, b) => (b.loggedAt?.seconds || 0) - (a.loggedAt?.seconds || 0)).forEach(log => {
       if (!log.foodId || !log.profileId) return;
-      if (!map[log.profileId][log.foodId]) map[log.profileId][log.foodId] = log.grams;
+      if (!map[log.profileId][log.foodId]) map[log.profileId][log.foodId] = log.amount ?? log.grams;
     });
     setLastPortion(map);
   }, [allFoodLogs]);
@@ -270,21 +291,21 @@ export default function App() {
     await updateDoc(doc(db, 'household', 'main'), { activeProfile: next });
   }
 
-  async function logFoodEntry(food, grams, forProfileId) {
-    const ratio = grams / 100;
+  async function logFoodEntry(food, amount, forProfileId) {
     await addDoc(collection(db, 'foodLogs'), {
       profileId: forProfileId,
       date: todayStr(),
       foodId: food.id,
       foodName: food.name,
-      grams: Number(grams),
-      calories: food.per100g.calories * ratio,
-      protein: food.per100g.protein * ratio,
-      fat: food.per100g.fat * ratio,
-      carbs: food.per100g.carbs * ratio,
+      amount: Number(amount),
+      unitName: food.unitName,
+      unitType: food.unitType,
+      calories: food.perUnit.calories * Number(amount),
+      protein: food.perUnit.protein * Number(amount),
+      fat: food.perUnit.fat * Number(amount),
+      carbs: food.perUnit.carbs * Number(amount),
       loggedAt: serverTimestamp()
     });
-    // Increment timesUsed on the saved food
     if (food.id) {
       const ref = doc(db, 'savedFoods', food.id);
       const snap = await getDoc(ref);
@@ -522,9 +543,9 @@ export default function App() {
           activeProfile={profile}
           partnerProfile={partner}
           lastPortionForPartner={lastPortion[partner.id] || {}}
-          onLog={(food, grams, partnerGrams) => {
-            if (grams > 0) logFoodEntry(food, grams, profile.id);
-            if (partnerGrams != null && partnerGrams > 0) logFoodEntry(food, partnerGrams, partner.id);
+          onLog={(food, amount, partnerAmount) => {
+            if (amount > 0) logFoodEntry(food, amount, profile.id);
+            if (partnerAmount != null && partnerAmount > 0) logFoodEntry(food, partnerAmount, partner.id);
           }}
           onCreateNew={(food) => addSavedFood(food)}
         />
@@ -554,6 +575,85 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// ============================================================
+// FOOD UNIT UTILITIES
+// ============================================================
+
+function formatFraction(value) {
+  const v = Number(value);
+  const fracs = [[0.25,'¼'],[1/3,'⅓'],[0.5,'½'],[2/3,'⅔'],[0.75,'¾']];
+  const whole = Math.floor(v);
+  const frac = v - whole;
+  if (Math.abs(frac) < 0.015) return whole > 0 ? String(whole) : null;
+  for (const [dec, sym] of fracs) {
+    if (Math.abs(frac - dec) < 0.015) return whole > 0 ? `${whole}${sym}` : sym;
+  }
+  return null;
+}
+
+function formatAmount(food, amount) {
+  const amt = Number(amount);
+  if (!food.unitType) return `${amt}g`; // legacy
+  if (food.unitType === 'weight') return `${amt}g`;
+  if (food.unitType === 'count') {
+    const noun = food.name.split(/[,\s]/)[0].toLowerCase();
+    return `${amt} ${amt === 1 ? noun : noun + 's'}`;
+  }
+  const frac = formatFraction(amt);
+  const display = frac !== null ? frac : amt;
+  if (food.unitName === 'cup') return `${display} ${amt === 1 && frac !== '1' ? 'cup' : 'cups'}`;
+  return `${display} ${food.unitName}`;
+}
+
+function getPortionChips(food) {
+  if (!food.unitType || food.unitType === 'weight') {
+    return [100, 150, 200, 250].map(v => ({ value: v, label: `${v}g` }));
+  }
+  if (food.unitType === 'count') {
+    return [1, 2, 3, 4].map(v => ({ value: v, label: String(v) }));
+  }
+  const u = food.unitName;
+  if (u === 'cup') return [
+    { value: 0.25, label: '¼ cup' }, { value: 0.5, label: '½ cup' },
+    { value: 1, label: '1 cup' }, { value: 1.5, label: '1½ cups' }
+  ];
+  if (u === 'tbsp') return [1,2,3].map(v => ({ value: v, label: `${v} tbsp` }));
+  if (u === 'tsp') return [1,2].map(v => ({ value: v, label: `${v} tsp` }));
+  if (u === 'fl oz') return [8,12,16].map(v => ({ value: v, label: `${v} fl oz` }));
+  return [];
+}
+
+function getFoodUnitLabel(food) {
+  if (!food.unitType || food.unitType === 'weight') return 'GRAMS';
+  if (food.unitType === 'count') {
+    const name = food.name.toLowerCase();
+    if (name.includes('egg')) return 'EGGS';
+    if (name.includes('banana')) return 'BANANAS';
+    if (name.includes('apple')) return 'APPLES';
+    return 'ITEMS';
+  }
+  const labels = { cup: 'CUPS', tbsp: 'TABLESPOONS', tsp: 'TEASPOONS', 'fl oz': 'FL OZ' };
+  return labels[food.unitName] || food.unitName.toUpperCase();
+}
+
+function getFoodSummary(food) {
+  if (food.perUnit) {
+    const p = food.perUnit;
+    const isWeight = food.unitType === 'weight';
+    const cal = isWeight ? Math.round(p.calories * 100) : Math.round(p.calories);
+    const prot = isWeight ? (p.protein * 100).toFixed(0) : p.protein.toFixed(0);
+    const fat = isWeight ? (p.fat * 100).toFixed(0) : p.fat.toFixed(0);
+    const carbs = isWeight ? (p.carbs * 100).toFixed(0) : p.carbs.toFixed(0);
+    const perLabel = isWeight ? '/100g' : food.unitType === 'count' ? '/item' : `/${food.unitName}`;
+    return `${cal} cal · P${prot} F${fat} C${carbs} ${perLabel}`;
+  }
+  if (food.per100g) {
+    const p = food.per100g;
+    return `${Math.round(p.calories)} cal · P${p.protein.toFixed(0)} F${p.fat.toFixed(0)} C${p.carbs.toFixed(0)} /100g`;
+  }
+  return '';
 }
 
 // ============================================================
@@ -679,7 +779,12 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
             <div key={f.id} className="ios-row">
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.foodName}</div>
-                <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>{f.grams}g · {Math.round(f.calories)} cal</div>
+                <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
+                  {f.unitName
+                    ? formatAmount({ unitType: f.unitType, unitName: f.unitName, name: f.foodName }, f.amount)
+                    : `${f.grams}g`
+                  } · {Math.round(f.calories)} cal
+                </div>
               </div>
               <button onClick={() => onDeleteFood(f)} style={{ background: 'none', border: 'none', color: '#ff453a', padding: 4, cursor: 'pointer', marginLeft: 12 }}>
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -796,13 +901,13 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
   const [stage, setStage] = useState(prefillFood ? 'portion' : 'search'); // search → portion → share
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(prefillFood || null);
-  const [grams, setGrams] = useState(prefillFood?.defaultGrams || 100);
-  const [yourLoggedGrams, setYourLoggedGrams] = useState(null);
+  const [amount, setAmount] = useState(prefillFood?.defaultAmount || 1);
+  const [yourLoggedAmount, setYourLoggedAmount] = useState(null);
   // New food
   const [creating, setCreating] = useState(false);
-  const [newFood, setNewFood] = useState({ name: '', calories: '', protein: '', fat: '', carbs: '', defaultGrams: 100, basis: 'per100g' });
+  const [newFood, setNewFood] = useState({ name: '', unitType: 'weight', unitName: 'g', calories: '', protein: '', fat: '', carbs: '', defaultAmount: 100 });
   // Partner share
-  const [partnerGrams, setPartnerGrams] = useState(null);
+  const [partnerAmount, setPartnerAmount] = useState(null);
 
   const filtered = useMemo(() => {
     if (!search) return savedFoods;
@@ -866,11 +971,11 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
           {filtered.length > 0 && (
             <div className="ios-group">
               {filtered.map(f => (
-                <button key={f.id} onClick={() => { setSelected(f); setGrams(f.defaultGrams || 100); setStage('portion'); }} className="ios-row-button">
+                <button key={f.id} onClick={() => { setSelected(f); setAmount(f.defaultAmount || 1); setStage('portion'); }} className="ios-row-button">
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                     <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
-                      {Math.round(f.per100g.calories)} cal · P{f.per100g.protein.toFixed(0)} F{f.per100g.fat.toFixed(0)} C{f.per100g.carbs.toFixed(0)} <span style={{ opacity: 0.6 }}>/100g</span>
+                      {getFoodSummary(f)}
                     </div>
                   </div>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
@@ -892,26 +997,43 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
 
   // Stage: CREATING NEW
   if (creating) {
+    const macrosLabel = (() => {
+      if (newFood.unitType === 'weight') return 'PER 100 GRAMS';
+      if (newFood.unitType === 'count') return 'PER 1 ITEM';
+      const names = { cup: 'PER 1 CUP', tbsp: 'PER 1 TABLESPOON', tsp: 'PER 1 TEASPOON', 'fl oz': 'PER 1 FL OZ' };
+      return names[newFood.unitName] || 'PER 1 UNIT';
+    })();
+
     function saveNew() {
-      const { name, calories, protein, fat, carbs, defaultGrams, basis } = newFood;
+      const { name, unitType, unitName, calories, protein, fat, carbs, defaultAmount } = newFood;
       if (!name || !calories) return;
-      const refGrams = basis === 'perServing' ? Number(defaultGrams) : 100;
-      const factor = 100 / refGrams;
-      const created = onCreateNew({
-        name,
-        per100g: {
-          calories: Number(calories) * factor,
-          protein: Number(protein || 0) * factor,
-          fat: Number(fat || 0) * factor,
-          carbs: Number(carbs || 0) * factor
-        },
-        defaultGrams: Number(defaultGrams) || 100
-      });
+      let perUnit;
+      if (unitType === 'weight') {
+        perUnit = {
+          calories: Number(calories) / 100,
+          protein: Number(protein || 0) / 100,
+          fat: Number(fat || 0) / 100,
+          carbs: Number(carbs || 0) / 100
+        };
+      } else {
+        perUnit = {
+          calories: Number(calories),
+          protein: Number(protein || 0),
+          fat: Number(fat || 0),
+          carbs: Number(carbs || 0)
+        };
+      }
+      const created = onCreateNew({ name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) });
       setSelected(created);
-      setGrams(Number(defaultGrams) || 100);
+      setAmount(Number(defaultAmount));
       setCreating(false);
       setStage('portion');
     }
+
+    const segBg = (active) => active
+      ? { background: '#0a84ff', color: '#fff' }
+      : { background: 'rgba(120,120,128,0.24)', color: 'rgba(235,235,245,0.6)' };
+
     return (
       <div className="ios-fullscreen">
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
@@ -923,59 +1045,57 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
           <div className="ios-group">
             <div className="ios-row">
               <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Name</div>
-              <input value={newFood.name} onChange={e => setNewFood({ ...newFood, name: e.target.value })} placeholder="Required" className="ios-input" style={{ textAlign: 'right', flex: 1, maxWidth: '60%' }} />
+              <input value={newFood.name} onChange={e => setNewFood(p => ({ ...p, name: e.target.value }))} placeholder="Required" className="ios-input" style={{ textAlign: 'right', flex: 1, maxWidth: '60%' }} />
             </div>
           </div>
 
-          <div className="ios-label">Per</div>
-          <div className="ios-group">
-            <button onClick={() => setNewFood({ ...newFood, basis: 'per100g' })} className="ios-row-button">
-              <div style={{ fontSize: 15 }}>100 grams</div>
-              {newFood.basis === 'per100g' && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>}
-            </button>
-            <button onClick={() => setNewFood({ ...newFood, basis: 'perServing' })} className="ios-row-button">
-              <div style={{ fontSize: 15 }}>Serving size...</div>
-              {newFood.basis === 'perServing' && <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>}
-            </button>
-            {newFood.basis === 'perServing' && (
-              <div className="ios-row">
-                <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Grams per serving</div>
-                <input type="number" inputMode="decimal" value={newFood.defaultGrams} onChange={e => setNewFood({ ...newFood, defaultGrams: e.target.value })} className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-              </div>
-            )}
+          <div className="ios-label">HOW DO YOU MEASURE THIS?</div>
+          <div style={{ display: 'flex', gap: 8, padding: '0 0 8px' }}>
+            {[['weight','Weight'],['volume','Volume'],['count','Count']].map(([type,label]) => (
+              <button key={type} onClick={() => {
+                const unitName = type === 'weight' ? 'g' : type === 'count' ? 'item' : 'cup';
+                const defaultAmount = type === 'weight' ? 100 : type === 'count' ? 1 : 1;
+                setNewFood(p => ({ ...p, unitType: type, unitName, defaultAmount }));
+              }}
+              style={{ flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', transition: 'all 0.15s', ...segBg(newFood.unitType === type) }}>
+                {label}
+              </button>
+            ))}
           </div>
 
-          <div className="ios-label">Macros</div>
-          <div className="ios-group">
-            <div className="ios-row">
-              <div style={{ fontSize: 15 }}>Calories</div>
-              <input type="number" inputMode="decimal" value={newFood.calories} onChange={e => setNewFood({ ...newFood, calories: e.target.value })} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+          {newFood.unitType === 'volume' && (
+            <div style={{ display: 'flex', gap: 8, padding: '0 0 12px' }}>
+              {[['cup','Cup'],['tbsp','Tbsp'],['tsp','Tsp'],['fl oz','Fl oz']].map(([un,label]) => (
+                <button key={un} onClick={() => {
+                  const defaultAmount = un === 'fl oz' ? 8 : 1;
+                  setNewFood(p => ({ ...p, unitName: un, defaultAmount }));
+                }}
+                style={{ flex: 1, padding: '7px 0', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 500, fontFamily: 'inherit', transition: 'all 0.15s', ...segBg(newFood.unitName === un) }}>
+                  {label}
+                </button>
+              ))}
             </div>
-            <div className="ios-row">
-              <div style={{ fontSize: 15 }}>Protein (g)</div>
-              <input type="number" inputMode="decimal" value={newFood.protein} onChange={e => setNewFood({ ...newFood, protein: e.target.value })} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-            </div>
-            <div className="ios-row">
-              <div style={{ fontSize: 15 }}>Fat (g)</div>
-              <input type="number" inputMode="decimal" value={newFood.fat} onChange={e => setNewFood({ ...newFood, fat: e.target.value })} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-            </div>
-            <div className="ios-row">
-              <div style={{ fontSize: 15 }}>Carbs (g)</div>
-              <input type="number" inputMode="decimal" value={newFood.carbs} onChange={e => setNewFood({ ...newFood, carbs: e.target.value })} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-            </div>
-          </div>
-
-          {newFood.basis === 'per100g' && (
-            <>
-              <div className="ios-label">Default portion (optional)</div>
-              <div className="ios-group">
-                <div className="ios-row">
-                  <div style={{ fontSize: 15 }}>Grams</div>
-                  <input type="number" inputMode="decimal" value={newFood.defaultGrams} onChange={e => setNewFood({ ...newFood, defaultGrams: e.target.value })} className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-                </div>
-              </div>
-            </>
           )}
+
+          <div className="ios-label">{macrosLabel}</div>
+          <div className="ios-group">
+            {[['calories','Calories'],['protein','Protein'],['fat','Fat'],['carbs','Carbs']].map(([k,label]) => (
+              <div key={k} className="ios-row">
+                <div style={{ fontSize: 15 }}>{label}</div>
+                <input type="number" inputMode="decimal" value={newFood[k]} onChange={e => setNewFood(p => ({ ...p, [k]: e.target.value }))} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+              </div>
+            ))}
+          </div>
+
+          <div className="ios-label">DEFAULT PORTION (OPTIONAL)</div>
+          <div className="ios-group">
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>
+                {newFood.unitType === 'weight' ? 'Grams' : newFood.unitType === 'count' ? 'Items' : newFood.unitName === 'cup' ? 'Cups' : newFood.unitName === 'tbsp' ? 'Tablespoons' : newFood.unitName === 'tsp' ? 'Teaspoons' : 'Fl oz'}
+              </div>
+              <input type="number" inputMode="decimal" value={newFood.defaultAmount} onChange={e => setNewFood(p => ({ ...p, defaultAmount: e.target.value }))} className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -983,6 +1103,17 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
 
   // Stage: PORTION
   if (stage === 'portion' && selected) {
+    const chips = getPortionChips(selected);
+    const unitLabel = getFoodUnitLabel(selected);
+    const amt = Number(amount);
+    const fracSub = selected.unitName === 'cup' ? formatFraction(amt) : null;
+    const cal = selected.perUnit ? Math.round(selected.perUnit.calories * amt) : Math.round((selected.per100g?.calories || 0) * amt / 100);
+    const prot = selected.perUnit ? (selected.perUnit.protein * amt).toFixed(1) : ((selected.per100g?.protein || 0) * amt / 100).toFixed(1);
+    const fat = selected.perUnit ? (selected.perUnit.fat * amt).toFixed(1) : ((selected.per100g?.fat || 0) * amt / 100).toFixed(1);
+    const carbs = selected.perUnit ? (selected.perUnit.carbs * amt).toFixed(1) : ((selected.per100g?.carbs || 0) * amt / 100).toFixed(1);
+    const logBtnText = `Log ${formatAmount(selected, amt)}`;
+    const step = selected.unitType === 'weight' ? '1' : '0.25';
+
     return (
       <div className="ios-fullscreen">
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
@@ -995,33 +1126,41 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
           <div style={{ textAlign: 'center', marginBottom: 28 }}>
             <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em' }}>{selected.name}</div>
             <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', marginTop: 4 }}>
-              {Math.round(selected.per100g.calories)} cal · P{selected.per100g.protein.toFixed(0)} F{selected.per100g.fat.toFixed(0)} C{selected.per100g.carbs.toFixed(0)} per 100g
+              {getFoodSummary(selected)}
             </div>
           </div>
 
           <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
-            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(235,235,245,0.5)', fontWeight: 600, marginBottom: 8 }}>Grams</div>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(235,235,245,0.5)', fontWeight: 600, marginBottom: 8 }}>{unitLabel}</div>
             <input
-              type="number" inputMode="decimal" value={grams}
-              onChange={e => setGrams(e.target.value)}
+              type="number" inputMode="decimal" step={step} value={amount}
+              onChange={e => setAmount(e.target.value)}
               className="ios-num"
               style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 48, fontWeight: 700, textAlign: 'center', width: '100%', caretColor: '#0a84ff', letterSpacing: '-0.03em' }}
               autoFocus
             />
+            {fracSub && fracSub !== String(amt) && (
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
+                {fracSub} {amt === 1 ? 'cup' : 'cups'}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
-              {[...new Set([50, 100, 150, 200, 226, 250, selected.defaultGrams])].filter(v => v).sort((a,b) => a-b).map(v => (
-                <button key={v} onClick={() => setGrams(v)} className={`ios-chip ${Number(grams) === v ? 'ios-chip-selected' : ''}`}>{v}g</button>
+              {chips.map(chip => (
+                <button key={chip.value} onClick={() => setAmount(chip.value)}
+                  className={`ios-chip ${Number(amount) === chip.value ? 'ios-chip-selected' : ''}`}>
+                  {chip.label}
+                </button>
               ))}
             </div>
           </div>
 
-          {grams > 0 && (
+          {amt > 0 && (
             <div style={{ marginTop: 16, padding: '12px 16px', background: 'rgba(120,120,128,0.12)', borderRadius: 12, display: 'flex', justifyContent: 'space-between' }}>
               {[
-                { l: 'Cal', v: Math.round(selected.per100g.calories * grams / 100) },
-                { l: 'Protein', v: (selected.per100g.protein * grams / 100).toFixed(1) },
-                { l: 'Fat', v: (selected.per100g.fat * grams / 100).toFixed(1) },
-                { l: 'Carbs', v: (selected.per100g.carbs * grams / 100).toFixed(1) }
+                { l: 'Cal', v: cal },
+                { l: 'Protein', v: prot },
+                { l: 'Fat', v: fat },
+                { l: 'Carbs', v: carbs }
               ].map(m => (
                 <div key={m.l} style={{ textAlign: 'center' }}>
                   <div style={{ fontSize: 11, color: 'rgba(235,235,245,0.5)' }}>{m.l}</div>
@@ -1034,15 +1173,13 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
 
         <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
           <button onClick={() => {
-            // Log to active profile, then transition to share screen
-            onLog(selected, Number(grams), null);
-            setYourLoggedGrams(Number(grams));
-            // Pre-fill partner portion: their last use of this food, or half of yours
-            const lastPartnerPortion = lastPortionForPartner[selected.id];
-            setPartnerGrams(lastPartnerPortion || Math.round(Number(grams) / 2));
+            onLog(selected, Number(amount), null);
+            setYourLoggedAmount(Number(amount));
+            const lastPartnerAmt = lastPortionForPartner[selected.id];
+            setPartnerAmount(lastPartnerAmt ?? selected.defaultAmount ?? 1);
             setStage('share');
-          }} className="ios-btn-primary">
-            Log {grams}g
+          }} className="ios-btn-primary" disabled={!amt || amt <= 0}>
+            {logBtnText}
           </button>
         </div>
       </div>
@@ -1051,14 +1188,20 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
 
   // Stage: SHARE (after logging your portion)
   if (stage === 'share' && selected) {
-    function logForPartner() {
-      // We already logged the active profile in onLog above; now we need a separate path to log just for partner
-      // But onLog logs both at once if partnerGrams is passed. Since we already logged you,
-      // we use a hack: re-open onLog with a marker. Simpler: just close and let the parent handle.
-      // Actually since the parent's onLog handles both, we should pass both at once. Let me rework:
-      // We'll skip the immediate log on the portion screen and do it all from here.
-      onClose();
-    }
+    const chips = getPortionChips(selected);
+    const pAmt = Number(partnerAmount);
+    const fracSub = selected.unitName === 'cup' && partnerAmount ? formatFraction(pAmt) : null;
+    const partnerUnitLabel = (() => {
+      if (!selected.unitType || selected.unitType === 'weight') return `${partnerProfile.name}'s grams`;
+      if (selected.unitType === 'count') return `${partnerProfile.name}'s items`;
+      const labels = { cup: 'cups', tbsp: 'tablespoons', tsp: 'teaspoons', 'fl oz': 'fl oz' };
+      return `${partnerProfile.name}'s ${labels[selected.unitName] || selected.unitName}`;
+    })();
+    const pCal = selected.perUnit && pAmt > 0 ? Math.round(selected.perUnit.calories * pAmt) : 0;
+    const pProt = selected.perUnit && pAmt > 0 ? (selected.perUnit.protein * pAmt).toFixed(1) : 0;
+    const pFat = selected.perUnit && pAmt > 0 ? (selected.perUnit.fat * pAmt).toFixed(1) : 0;
+    const pCarbs = selected.perUnit && pAmt > 0 ? (selected.perUnit.carbs * pAmt).toFixed(1) : 0;
+
     return (
       <div className="ios-fullscreen">
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
@@ -1072,7 +1215,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
             <div style={{ width: 56, height: 56, borderRadius: 28, background: 'rgba(48,209,88,0.15)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#30d158" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
             </div>
-            <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>Logged {yourLoggedGrams}g</div>
+            <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>Logged {formatAmount(selected, yourLoggedAmount)}</div>
             <div style={{ fontSize: 14, color: 'rgba(235,235,245,0.6)', marginTop: 4 }}>{selected.name}</div>
           </div>
 
@@ -1082,23 +1225,31 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
 
           <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(235,235,245,0.5)', fontWeight: 600, marginBottom: 8 }}>
-              {partnerProfile.name}'s grams
+              {partnerUnitLabel}
             </div>
             <input
-              type="number" inputMode="decimal" value={partnerGrams ?? ''}
-              onChange={e => setPartnerGrams(e.target.value === '' ? null : Number(e.target.value))}
+              type="number" inputMode="decimal" value={partnerAmount ?? ''}
+              onChange={e => setPartnerAmount(e.target.value === '' ? null : Number(e.target.value))}
               className="ios-num"
               style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 48, fontWeight: 700, textAlign: 'center', width: '100%', caretColor: '#0a84ff', letterSpacing: '-0.03em' }}
               autoFocus
             />
+            {fracSub && fracSub !== String(pAmt) && (
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
+                {fracSub} {pAmt === 1 ? 'cup' : 'cups'}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
-              {[...new Set([Math.round(yourLoggedGrams / 2), Math.round(yourLoggedGrams * 0.75), yourLoggedGrams, lastPortionForPartner[selected.id]])].filter(v => v && v > 0).sort((a,b) => a-b).map(v => (
-                <button key={v} onClick={() => setPartnerGrams(v)} className={`ios-chip ${Number(partnerGrams) === v ? 'ios-chip-selected' : ''}`}>{v}g</button>
+              {chips.map(chip => (
+                <button key={chip.value} onClick={() => setPartnerAmount(chip.value)}
+                  className={`ios-chip ${Number(partnerAmount) === chip.value ? 'ios-chip-selected' : ''}`}>
+                  {chip.label}
+                </button>
               ))}
             </div>
-            {partnerGrams > 0 && (
+            {pAmt > 0 && selected.perUnit && (
               <div className="ios-num" style={{ marginTop: 14, fontSize: 13, color: 'rgba(235,235,245,0.6)' }}>
-                = {Math.round(selected.per100g.calories * partnerGrams / 100)} cal · P{(selected.per100g.protein * partnerGrams / 100).toFixed(1)} F{(selected.per100g.fat * partnerGrams / 100).toFixed(1)} C{(selected.per100g.carbs * partnerGrams / 100).toFixed(1)}
+                = {pCal} cal · P{pProt} F{pFat} C{pCarbs}
               </div>
             )}
           </div>
@@ -1107,18 +1258,12 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
         <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <button
             onClick={() => {
-              // Log only for partner (your own was already logged via onLog above)
-              // Hack: pass null food + partnerGrams to indicate partner-only log
-              // Actually, the cleanest approach: call onLog again with a flag. Since onLog accepts (food, yourGrams, partnerGrams),
-              // we'll call it with 0 yourGrams (which onLog should skip) and partnerGrams.
-              // For demo purposes, we'll just call a new mechanism.
-              if (partnerGrams > 0) {
-                // Use the same onLog signature but pass 0 for yours to indicate skip
-                onLog(selected, 0, Number(partnerGrams));
+              if (pAmt > 0) {
+                onLog(selected, 0, pAmt);
               }
               onClose();
             }}
-            disabled={!partnerGrams || partnerGrams <= 0}
+            disabled={!partnerAmount || partnerAmount <= 0}
             className="ios-btn-primary"
           >
             Log for {partnerProfile.name}
@@ -1586,7 +1731,7 @@ function ManageFoodsSheet({ foods, onClose, onDelete }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                   <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
-                    {Math.round(f.per100g.calories)} cal/100g · used {f.timesUsed}×
+                    {getFoodSummary(f)} · used {f.timesUsed}×
                   </div>
                 </div>
                 <button onClick={() => onDelete(f.id)} style={{ background: 'none', border: 'none', color: '#ff453a', fontSize: 14, cursor: 'pointer' }}>Delete</button>
