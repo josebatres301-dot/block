@@ -11,15 +11,10 @@ import {
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
-  { name: 'Ground Beef 90/10, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 2.17, protein: 0.26, fat: 0.117, carbs: 0 }, defaultAmount: 113, timesUsed: 0 },
   { name: 'White Rice, cooked', unitType: 'volume', unitName: 'cup', perUnit: { calories: 205, protein: 4.3, fat: 0.4, carbs: 45 }, defaultAmount: 1, timesUsed: 0 },
-  { name: 'Brown Rice, cooked', unitType: 'volume', unitName: 'cup', perUnit: { calories: 218, protein: 4.5, fat: 1.6, carbs: 45 }, defaultAmount: 1, timesUsed: 0 },
   { name: 'Egg, large', unitType: 'count', unitName: 'item', perUnit: { calories: 72, protein: 6.3, fat: 4.8, carbs: 0.4 }, defaultAmount: 2, timesUsed: 0 },
-  { name: 'Greek Yogurt, plain nonfat', unitType: 'weight', unitName: 'g', perUnit: { calories: 0.59, protein: 0.10, fat: 0.004, carbs: 0.036 }, defaultAmount: 170, timesUsed: 0 },
-  { name: 'Oats, dry', unitType: 'weight', unitName: 'g', perUnit: { calories: 3.89, protein: 0.169, fat: 0.069, carbs: 0.66 }, defaultAmount: 40, timesUsed: 0 },
-  { name: 'Banana, medium', unitType: 'count', unitName: 'item', perUnit: { calories: 105, protein: 1.3, fat: 0.4, carbs: 27 }, defaultAmount: 1, timesUsed: 0 },
   { name: 'Olive Oil', unitType: 'volume', unitName: 'tbsp', perUnit: { calories: 119, protein: 0, fat: 13.5, carbs: 0 }, defaultAmount: 1, timesUsed: 0 },
-  { name: 'Almonds', unitType: 'weight', unitName: 'g', perUnit: { calories: 5.79, protein: 0.21, fat: 0.50, carbs: 0.22 }, defaultAmount: 28, timesUsed: 0 }
+  { name: 'Banana, medium', unitType: 'count', unitName: 'item', perUnit: { calories: 105, protein: 1.3, fat: 0.4, carbs: 27 }, defaultAmount: 1, timesUsed: 0 }
 ];
 
 const JOSE_PLAN = {
@@ -147,39 +142,31 @@ export default function App() {
     (async () => {
       await ensureAuth();
 
-      // Check if household doc exists; seed if not
+      // Migration: delete all old-shape saved foods (have per100g, missing perUnit) and re-seed
+      const savedFoodsSnap = await getDocs(collection(db, 'savedFoods'));
+      const needsMigration = savedFoodsSnap.docs.some(d => d.data().per100g && !d.data().perUnit);
+      if (needsMigration) {
+        for (const d of savedFoodsSnap.docs) {
+          await deleteDoc(doc(db, 'savedFoods', d.id));
+        }
+        for (const food of SEED_FOODS) {
+          await addDoc(collection(db, 'savedFoods'), { ...food, createdAt: serverTimestamp() });
+        }
+      }
+
+      // Check if household doc exists; seed if not (first launch)
       const hhRef = doc(db, 'household', 'main');
       const hhSnap = await getDoc(hhRef);
       if (!hhSnap.exists()) {
-        // First launch ever — seed everything
         const today = todayStr();
         await setDoc(hhRef, { blockStartDate: today, activeProfile: 'jose' });
         await setDoc(doc(db, 'profiles', 'jose'), DEFAULT_PROFILES.jose);
         await setDoc(doc(db, 'profiles', 'yareli'), DEFAULT_PROFILES.yareli);
-        // Seed default foods
-        for (const food of SEED_FOODS) {
-          await addDoc(collection(db, 'savedFoods'), food);
-        }
-      }
-      // Migration: update foods from old per100g shape to new perUnit shape
-      const foodsSnap = await getDocs(collection(db, 'savedFoods'));
-      const existingFoods = foodsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      for (const food of existingFoods) {
-        if (food.perUnit) continue; // already new shape
-        const seed = SEED_FOODS.find(s => s.name === food.name);
-        if (seed) {
-          const { name: _n, timesUsed: _t, ...seedShape } = seed;
-          await updateDoc(doc(db, 'savedFoods', food.id), seedShape);
-        } else {
-          await deleteDoc(doc(db, 'savedFoods', food.id));
-        }
-      }
-      // Ensure all seed foods exist (handles renamed seeds)
-      const currentFoodsSnap = await getDocs(collection(db, 'savedFoods'));
-      const currentNames = new Set(currentFoodsSnap.docs.map(d => d.data().name));
-      for (const seed of SEED_FOODS) {
-        if (!currentNames.has(seed.name)) {
-          await addDoc(collection(db, 'savedFoods'), seed);
+        const existingFoodsSnap = await getDocs(collection(db, 'savedFoods'));
+        if (existingFoodsSnap.empty) {
+          for (const food of SEED_FOODS) {
+            await addDoc(collection(db, 'savedFoods'), { ...food, createdAt: serverTimestamp() });
+          }
         }
       }
       if (active) setBootstrapped(true);
@@ -371,7 +358,7 @@ export default function App() {
   }
 
   // --- Loading state ---
-  if (!bootstrapped || !profile || !partner) {
+  if (!profile || !partner) {
     return (
       <div style={{ minHeight: '100vh', background: '#000', color: 'rgba(235,235,245,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: '-apple-system, system-ui, sans-serif', fontSize: 13, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
         Loading...
@@ -763,7 +750,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontSize: 11 }}>
                 <span style={{ color: 'rgba(235,235,245,0.5)' }}>{m.label}</span>
-                <span className="ios-num" style={{ color: '#fff' }}>{Math.round(m.target - m.val)}<span style={{ color: 'rgba(235,235,245,0.5)' }}>g</span></span>
+                <span className="ios-num" style={{ color: '#fff' }}>{Math.round(m.val)}<span style={{ color: 'rgba(235,235,245,0.5)' }}> / {m.target}g</span></span>
               </div>
             </div>
           ))}
@@ -1731,7 +1718,7 @@ function ManageFoodsSheet({ foods, onClose, onDelete }) {
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                   <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
-                    {getFoodSummary(f)} · used {f.timesUsed}×
+                    {f.perUnit ? `${Math.round(f.perUnit.calories * (f.unitType === 'weight' ? 100 : 1))} cal per ${f.unitType === 'weight' ? '100g' : '1 ' + f.unitName}` : ''} · used {f.timesUsed}×
                   </div>
                 </div>
                 <button onClick={() => onDelete(f.id)} style={{ background: 'none', border: 'none', color: '#ff453a', fontSize: 14, cursor: 'pointer' }}>Delete</button>
