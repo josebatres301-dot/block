@@ -453,6 +453,7 @@ export default function App() {
       background: #1c1c1e; border-radius: 14px 14px 0 0;
       width: 100%; max-width: 480px; max-height: 92vh;
       display: flex; flex-direction: column;
+      padding-bottom: env(safe-area-inset-bottom);
       animation: slideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1);
     }
     @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -460,6 +461,8 @@ export default function App() {
       position: fixed; inset: 0; z-index: 50;
       background: #000; max-width: 480px; margin: 0 auto;
       display: flex; flex-direction: column;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
       animation: slideUp 0.3s cubic-bezier(0.32, 0.72, 0, 1);
     }
     .ios-grabber {
@@ -569,7 +572,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
   else if (calPct > 0.4) calColor = '#30d158';
 
   return (
-    <div style={{ minHeight: '100vh', paddingBottom: 32 }}>
+    <div style={{ minHeight: '100vh', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 32 }}>
       {/* Header */}
       <header style={{ padding: '12px 20px 8px', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
