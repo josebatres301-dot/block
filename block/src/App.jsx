@@ -558,7 +558,7 @@ export default function App() {
 // ============================================================
 
 function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings }) {
-  const dateStr = new Date('2026-05-12').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
   const calLeft = profile.macros.calories - consumed.calories;
