@@ -9,6 +9,8 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
+const APP_VERSION = '1.4';
+
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
   { name: 'White Rice, cooked', unitType: 'volume', unitName: 'cup', perUnit: { calories: 205, protein: 4.3, fat: 0.4, carbs: 45 }, defaultAmount: 1, timesUsed: 0 },
@@ -808,6 +810,9 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
         <button onClick={onToggleProfile} className="ios-group" style={{ width: '100%', border: 'none', textAlign: 'left', color: 'inherit', fontFamily: 'inherit', cursor: 'pointer', padding: 0, display: 'block' }}>
           <PartnerSummary partner={partner} partnerId={partner.id} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts} />
         </button>
+      </div>
+      <div style={{ textAlign: 'center', padding: '24px 16px 8px', fontSize: 11, color: 'rgba(235,235,245,0.25)', letterSpacing: '0.04em' }}>
+        v{APP_VERSION}
       </div>
     </div>
   );
