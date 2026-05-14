@@ -991,7 +991,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
       return names[newFood.unitName] || 'PER 1 UNIT';
     })();
 
-    function saveNew() {
+    async function saveNew() {
       const { name, unitType, unitName, calories, protein, fat, carbs, defaultAmount } = newFood;
       if (!name || !calories) return;
       let perUnit;
@@ -1010,7 +1010,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
           carbs: Number(carbs || 0)
         };
       }
-      const created = onCreateNew({ name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) });
+      const created = await onCreateNew({ name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) });
       setSelected(created);
       setAmount(Number(defaultAmount));
       setCreating(false);
