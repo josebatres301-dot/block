@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -126,6 +126,8 @@ export default function App() {
   const [showMacros, setShowMacros] = useState(false);
   const [showLastWorkouts, setShowLastWorkouts] = useState(false);
   const [undoData, setUndoData] = useState(null);
+  const [shareToast, setShareToast] = useState(null);
+  const [sharePortionFood, setSharePortionFood] = useState(null);
 
   // --- Persisted state (synced from Firestore) ---
   const [activeProfile, setActiveProfileState] = useState('jose');
@@ -301,6 +303,11 @@ export default function App() {
       if (snap.exists()) {
         await updateDoc(ref, { timesUsed: (snap.data().timesUsed || 0) + 1 });
       }
+    }
+    if (forProfileId === activeProfile) {
+      if (shareToast?.timer) clearTimeout(shareToast.timer);
+      const timer = setTimeout(() => setShareToast(null), 5000);
+      setShareToast({ food, amount: Number(amount), timer });
     }
   }
 
@@ -532,9 +539,8 @@ export default function App() {
           activeProfile={profile}
           partnerProfile={partner}
           lastPortionForPartner={lastPortion[partner.id] || {}}
-          onLog={(food, amount, partnerAmount) => {
+          onLog={(food, amount) => {
             if (amount > 0) logFoodEntry(food, amount, profile.id);
-            if (partnerAmount != null && partnerAmount > 0) logFoodEntry(food, partnerAmount, partner.id);
           }}
           onCreateNew={(food) => addSavedFood(food)}
         />
@@ -554,6 +560,38 @@ export default function App() {
 
       {showMacros && (
         <MacrosSheet profile={profile} onClose={() => setShowMacros(false)} onSave={(m) => { updateMacros(m); setShowMacros(false); }} />
+      )}
+
+      {sharePortionFood && (
+        <SharePortionSheet
+          food={sharePortionFood.food}
+          yourAmount={sharePortionFood.yourAmount}
+          partner={partner}
+          lastPartnerPortion={lastPortion[partnerId]?.[sharePortionFood.food.id]}
+          onClose={() => setSharePortionFood(null)}
+          onLog={(amount) => {
+            logFoodEntry(sharePortionFood.food, amount, partnerId);
+            setSharePortionFood(null);
+          }}
+        />
+      )}
+
+      {shareToast && (
+        <div className="ios-toast" style={undoData ? { bottom: 80 } : {}}>
+          <div style={{ fontSize: 14 }}>
+            Logged <span style={{ color: 'rgba(235,235,245,0.6)' }}>{shareToast.amount}{shareToast.food.unitName === 'g' ? 'g' : ' ' + shareToast.food.unitName} {shareToast.food.name}</span>
+          </div>
+          <button
+            onClick={() => {
+              clearTimeout(shareToast.timer);
+              setSharePortionFood({ food: shareToast.food, yourAmount: shareToast.amount });
+              setShareToast(null);
+            }}
+            style={{ background: 'none', border: 'none', color: '#0a84ff', fontSize: 15, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap', marginLeft: 12 }}
+          >
+            Share with {partner.name}
+          </button>
+        </div>
       )}
 
       {undoData && (
@@ -890,16 +928,13 @@ function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWor
 // ============================================================
 
 function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partnerProfile, lastPortionForPartner, onLog, onCreateNew }) {
-  const [stage, setStage] = useState(prefillFood ? 'portion' : 'search'); // search → portion → share
+  const [stage, setStage] = useState(prefillFood ? 'portion' : 'search'); // search → portion
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(prefillFood || null);
   const [amount, setAmount] = useState(prefillFood?.defaultAmount || 1);
-  const [yourLoggedAmount, setYourLoggedAmount] = useState(null);
   // New food
   const [creating, setCreating] = useState(false);
   const [newFood, setNewFood] = useState({ name: '', unitType: 'weight', unitName: 'g', calories: '', protein: '', fat: '', carbs: '', defaultAmount: 100 });
-  // Partner share
-  const [partnerAmount, setPartnerAmount] = useState(null);
 
   const filtered = useMemo(() => {
     if (!search) return savedFoods;
@@ -1166,10 +1201,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
         <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
           <button onClick={() => {
             onLog(selected, Number(amount), null);
-            setYourLoggedAmount(Number(amount));
-            const lastPartnerAmt = lastPortionForPartner[selected.id];
-            setPartnerAmount(lastPartnerAmt ?? selected.defaultAmount ?? 1);
-            setStage('share');
+            onClose();
           }} className="ios-btn-primary" disabled={!amt || amt <= 0}>
             {logBtnText}
           </button>
@@ -1178,95 +1210,102 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
     );
   }
 
-  // Stage: SHARE (after logging your portion)
-  if (stage === 'share' && selected) {
-    const chips = getPortionChips(selected);
-    const pAmt = Number(partnerAmount);
-    const fracSub = selected.unitName === 'cup' && partnerAmount ? formatFraction(pAmt) : null;
-    const partnerUnitLabel = (() => {
-      if (!selected.unitType || selected.unitType === 'weight') return `${partnerProfile.name}'s grams`;
-      if (selected.unitType === 'count') return `${partnerProfile.name}'s items`;
-      const labels = { cup: 'cups', tbsp: 'tablespoons', tsp: 'teaspoons', 'fl oz': 'fl oz' };
-      return `${partnerProfile.name}'s ${labels[selected.unitName] || selected.unitName}`;
-    })();
-    const pCal = selected.perUnit && pAmt > 0 ? Math.round(selected.perUnit.calories * pAmt) : 0;
-    const pProt = selected.perUnit && pAmt > 0 ? (selected.perUnit.protein * pAmt).toFixed(1) : 0;
-    const pFat = selected.perUnit && pAmt > 0 ? (selected.perUnit.fat * pAmt).toFixed(1) : 0;
-    const pCarbs = selected.perUnit && pAmt > 0 ? (selected.perUnit.carbs * pAmt).toFixed(1) : 0;
+  return null;
+}
 
-    return (
-      <div className="ios-fullscreen">
+// ============================================================
+// SHARE PORTION SHEET
+// ============================================================
+
+function SharePortionSheet({ food, yourAmount, partner, lastPartnerPortion, onClose, onLog }) {
+  const defaultAmt = lastPartnerPortion != null ? lastPartnerPortion : (() => {
+    const half = yourAmount / 2;
+    if (!food.unitType || food.unitType === 'weight') return Math.round(half);
+    if (food.unitType === 'count') return Math.round(half);
+    return Math.round(half * 4) / 4;
+  })();
+  const [amount, setAmount] = useState(defaultAmt || 1);
+
+  const chips = getPortionChips(food);
+  const unitLabel = (() => {
+    if (!food.unitType || food.unitType === 'weight') return `${partner.name}'s grams`;
+    if (food.unitType === 'count') return `${partner.name}'s items`;
+    const labels = { cup: 'cups', tbsp: 'tablespoons', tsp: 'teaspoons', 'fl oz': 'fl oz' };
+    return `${partner.name}'s ${labels[food.unitName] || food.unitName}`;
+  })();
+  const amt = Number(amount);
+  const fracSub = food.unitName === 'cup' && amt ? formatFraction(amt) : null;
+  const step = food.unitType === 'weight' ? '1' : '0.25';
+  const cal = food.perUnit && amt > 0 ? Math.round(food.perUnit.calories * amt) : 0;
+  const prot = food.perUnit && amt > 0 ? (food.perUnit.protein * amt).toFixed(1) : 0;
+  const fat = food.perUnit && amt > 0 ? (food.perUnit.fat * amt).toFixed(1) : 0;
+  const carbs = food.perUnit && amt > 0 ? (food.perUnit.carbs * amt).toFixed(1) : 0;
+
+  return (
+    <div className="ios-modal-backdrop" onClick={onClose}>
+      <div className="ios-sheet" onClick={e => e.stopPropagation()}>
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
           <div style={{ width: 60 }} />
-          <div style={{ fontSize: 17, fontWeight: 600 }}>Share Food</div>
-          <button onClick={onClose} className="ios-btn-text" style={{ fontWeight: 600 }}>Done</button>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>{partner.name}'s portion</div>
+          <button onClick={onClose} className="ios-btn-text">Cancel</button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px 24px' }}>
-          <div style={{ textAlign: 'center', marginBottom: 24 }}>
-            <div style={{ width: 56, height: 56, borderRadius: 28, background: 'rgba(48,209,88,0.15)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#30d158" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            </div>
-            <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em' }}>Logged {formatAmount(selected, yourLoggedAmount)}</div>
-            <div style={{ fontSize: 14, color: 'rgba(235,235,245,0.6)', marginTop: 4 }}>{selected.name}</div>
-          </div>
-
-          <div style={{ textAlign: 'center', marginBottom: 16, fontSize: 15, color: 'rgba(235,235,245,0.7)' }}>
-            Did {partnerProfile.name} eat this too?
-          </div>
-
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px 16px' }}>
           <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
             <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(235,235,245,0.5)', fontWeight: 600, marginBottom: 8 }}>
-              {partnerUnitLabel}
+              {unitLabel}
             </div>
             <input
-              type="number" inputMode="decimal" value={partnerAmount ?? ''}
-              onChange={e => setPartnerAmount(e.target.value === '' ? null : Number(e.target.value))}
+              type="number" inputMode="decimal" step={step} value={amount}
+              onChange={e => setAmount(e.target.value)}
               className="ios-num"
               style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 48, fontWeight: 700, textAlign: 'center', width: '100%', caretColor: '#0a84ff', letterSpacing: '-0.03em' }}
               autoFocus
             />
-            {fracSub && fracSub !== String(pAmt) && (
+            {fracSub && fracSub !== String(amt) && (
               <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
-                {fracSub} {pAmt === 1 ? 'cup' : 'cups'}
+                {fracSub} {amt === 1 ? 'cup' : 'cups'}
               </div>
             )}
             <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
               {chips.map(chip => (
-                <button key={chip.value} onClick={() => setPartnerAmount(chip.value)}
-                  className={`ios-chip ${Number(partnerAmount) === chip.value ? 'ios-chip-selected' : ''}`}>
+                <button key={chip.value} onClick={() => setAmount(chip.value)}
+                  className={`ios-chip ${Number(amount) === chip.value ? 'ios-chip-selected' : ''}`}>
                   {chip.label}
                 </button>
               ))}
             </div>
-            {pAmt > 0 && selected.perUnit && (
-              <div className="ios-num" style={{ marginTop: 14, fontSize: 13, color: 'rgba(235,235,245,0.6)' }}>
-                = {pCal} cal · P{pProt} F{pFat} C{pCarbs}
-              </div>
-            )}
           </div>
+
+          {amt > 0 && food.perUnit && (
+            <div style={{ marginTop: 16, padding: '12px 16px', background: 'rgba(120,120,128,0.12)', borderRadius: 12, display: 'flex', justifyContent: 'space-between' }}>
+              {[
+                { l: 'Cal', v: cal },
+                { l: 'Protein', v: prot },
+                { l: 'Fat', v: fat },
+                { l: 'Carbs', v: carbs }
+              ].map(m => (
+                <div key={m.l} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 11, color: 'rgba(235,235,245,0.5)' }}>{m.l}</div>
+                  <div className="ios-num" style={{ fontSize: 17, fontWeight: 600, marginTop: 2 }}>{m.v}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
           <button
-            onClick={() => {
-              if (pAmt > 0) {
-                onLog(selected, 0, pAmt);
-              }
-              onClose();
-            }}
-            disabled={!partnerAmount || partnerAmount <= 0}
+            onClick={() => onLog(amt)}
+            disabled={!amt || amt <= 0}
             className="ios-btn-primary"
           >
-            Log for {partnerProfile.name}
+            Log for {partner.name}
           </button>
-          <button onClick={onClose} className="ios-btn-secondary">No, just me</button>
         </div>
       </div>
-    );
-  }
-
-  return null;
+    </div>
+  );
 }
 
 // ============================================================
