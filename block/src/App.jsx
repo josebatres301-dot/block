@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -84,6 +84,30 @@ function yesterdayStr() {
   return d.toISOString().slice(0, 10);
 }
 
+// Start of current week (Monday) as YYYY-MM-DD
+function startOfWeekStr() {
+  const d = new Date();
+  const daysFromMonday = (d.getDay() === 0 ? 6 : d.getDay() - 1);
+  d.setDate(d.getDate() - daysFromMonday);
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 10);
+}
+
+// Training days this week that have already passed and were not logged
+function getMissedThisWeek(profile, allWorkouts, profileId) {
+  if (!profile?.plan?.trainingDays) return [];
+  const currentDow = new Date().getDay();
+  const weekStart = startOfWeekStr();
+  const loggedDayNames = new Set(
+    allWorkouts.filter(w => w.profileId === profileId && w.date >= weekStart).map(w => w.dayName)
+  );
+  function dowOrder(dow) { return dow === 0 ? 6 : dow - 1; }
+  const todayOrder = dowOrder(currentDow);
+  return profile.plan.trainingDays.filter(td =>
+    dowOrder(td.dayOfWeek) < todayOrder && !loggedDayNames.has(td.dayName)
+  );
+}
+
 // Get block start date - first launch sets it to today
 async function getOrInitBlockStart() {
   const ref = doc(db, 'household', 'main');
@@ -122,6 +146,7 @@ export default function App() {
   const [showFoodEntry, setShowFoodEntry] = useState(false);
   const [prefillFood, setPrefillFood] = useState(null);
   const [showWorkoutLogger, setShowWorkoutLogger] = useState(false);
+  const [makeupDay, setMakeupDay] = useState(null);
   const [showManageFoods, setShowManageFoods] = useState(false);
   const [showMacros, setShowMacros] = useState(false);
   const [showLastWorkouts, setShowLastWorkouts] = useState(false);
@@ -273,6 +298,11 @@ export default function App() {
   const todaysDay = profile?.plan?.trainingDays.find(d => d.dayOfWeek === new Date().getDay());
   const workoutDone = allWorkouts.some(w => w.profileId === activeProfile && w.date === todayDate && w.dayName === todaysDay?.dayName);
 
+  const missedThisWeek = useMemo(() =>
+    profile ? getMissedThisWeek(profile, allWorkouts, activeProfile) : [],
+    [profile, allWorkouts, activeProfile]
+  );
+
   const dayCount = useMemo(() => {
     if (!blockStartDate) return 1;
     const start = new Date(blockStartDate);
@@ -354,11 +384,11 @@ export default function App() {
     });
   }
 
-  async function saveWorkout(loggedExercises) {
+  async function saveWorkout(loggedExercises, dayName) {
     await addDoc(collection(db, 'workouts'), {
       profileId: activeProfile,
       date: todayDate,
-      dayName: todaysDay.dayName,
+      dayName: dayName,
       exercises: loggedExercises,
       loggedAt: serverTimestamp()
     });
@@ -534,6 +564,8 @@ export default function App() {
           onLogWeight={logWeight}
           onStartWorkout={() => setShowWorkoutLogger(true)}
           onOpenSettings={() => setView('settings')}
+          missedThisWeek={missedThisWeek}
+          onStartMakeup={(day) => setMakeupDay(day)}
         />
       )}
       {view === 'settings' && (
@@ -562,7 +594,11 @@ export default function App() {
       )}
 
       {showWorkoutLogger && todaysDay && (
-        <WorkoutLogger day={todaysDay} onClose={() => setShowWorkoutLogger(false)} onSave={saveWorkout} />
+        <WorkoutLogger day={todaysDay} onClose={() => setShowWorkoutLogger(false)} onSave={(logged) => saveWorkout(logged, todaysDay.dayName)} />
+      )}
+
+      {makeupDay && (
+        <WorkoutLogger day={makeupDay} onClose={() => setMakeupDay(null)} onSave={(logged) => { saveWorkout(logged, makeupDay.dayName); setMakeupDay(null); }} />
       )}
 
       {showLastWorkouts && (
@@ -702,7 +738,7 @@ function getFoodSummary(food) {
 // HOME PAGE
 // ============================================================
 
-function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings }) {
+function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup }) {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
@@ -868,6 +904,52 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
           </div>
         </>
       )}
+
+      {/* Missed workout catch-up */}
+      {missedThisWeek?.length > 0 && (
+        <>
+          <div className="ios-label">Missed This Week</div>
+          <div style={{ padding: '0 16px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {missedThisWeek.map(td => (
+                <button
+                  key={td.dayName}
+                  onClick={() => onStartMakeup(td)}
+                  style={{
+                    width: '100%', background: '#1c1c1e', border: 'none',
+                    borderRadius: 14, padding: '14px 16px',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    cursor: 'pointer', color: 'inherit', fontFamily: 'inherit',
+                    opacity: 0.95
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{
+                      width: 28, height: 28, borderRadius: 14,
+                      background: 'rgba(255,159,10,0.15)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center'
+                    }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ff9f0a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 12a9 9 0 1 0 3-6.7"/>
+                        <path d="M3 4v5h5"/>
+                        <path d="M12 7v5l3 2"/>
+                      </svg>
+                    </div>
+                    <div style={{ textAlign: 'left' }}>
+                      <div style={{ fontSize: 15, fontWeight: 600 }}>{td.dayName} day</div>
+                      <div style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>
+                        {td.exercises.length} exercises · Make up
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ color: '#ff9f0a', fontSize: 15, fontWeight: 500 }}>Start</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
       <div style={{ textAlign: 'center', padding: '24px 16px 8px', fontSize: 11, color: 'rgba(235,235,245,0.25)', letterSpacing: '0.04em' }}>
         v{APP_VERSION}
       </div>
