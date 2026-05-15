@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.5';
+const APP_VERSION = '1.6';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -139,6 +139,22 @@ export default function App() {
   const [allWorkouts, setAllWorkouts] = useState([]); // both profiles
   const [lastPortion, setLastPortion] = useState({ jose: {}, yareli: {} });
   const [bootstrapped, setBootstrapped] = useState(false);
+  const [todayDate, setTodayDate] = useState(todayStr());
+
+  // Keep todayDate current across midnight and background/foreground transitions
+  useEffect(() => {
+    function checkDate() {
+      const current = todayStr();
+      if (current !== todayDate) setTodayDate(current);
+    }
+    const interval = setInterval(checkDate, 60000);
+    const onVisible = () => { if (document.visibilityState === 'visible') checkDate(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [todayDate]);
 
   // --- Bootstrap on first launch ---
   useEffect(() => {
@@ -205,9 +221,8 @@ export default function App() {
       setSavedFoods(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }));
 
-    // Today's foods (both profiles)
-    const today = todayStr();
-    unsubs.push(onSnapshot(query(collection(db, 'foodLogs'), where('date', '==', today)), snap => {
+    // Today's foods (both profiles) — re-subscribes when date changes at midnight
+    unsubs.push(onSnapshot(query(collection(db, 'foodLogs'), where('date', '==', todayDate)), snap => {
       setAllFoodLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }));
 
@@ -225,7 +240,7 @@ export default function App() {
     }));
 
     return () => unsubs.forEach(u => u());
-  }, [bootstrapped]);
+  }, [bootstrapped, todayDate]);
 
   // --- Derived values for current profile ---
   const profile = profiles[activeProfile];
@@ -256,7 +271,7 @@ export default function App() {
   }), { calories: 0, protein: 0, fat: 0, carbs: 0 }), [foods]);
 
   const todaysDay = profile?.plan?.trainingDays.find(d => d.dayOfWeek === new Date().getDay());
-  const workoutDone = allWorkouts.some(w => w.profileId === activeProfile && w.date === todayStr() && w.dayName === todaysDay?.dayName);
+  const workoutDone = allWorkouts.some(w => w.profileId === activeProfile && w.date === todayDate && w.dayName === todaysDay?.dayName);
 
   const dayCount = useMemo(() => {
     if (!blockStartDate) return 1;
@@ -285,7 +300,7 @@ export default function App() {
   async function logFoodEntry(food, amount, forProfileId) {
     await addDoc(collection(db, 'foodLogs'), {
       profileId: forProfileId,
-      date: todayStr(),
+      date: todayDate,
       foodId: food.id,
       foodName: food.name,
       amount: Number(amount),
@@ -328,7 +343,7 @@ export default function App() {
   }
 
   async function logWeight(weight) {
-    const today = todayStr();
+    const today = todayDate;
     // Use deterministic doc id = one weight per profile per day
     const id = `${activeProfile}_${today}`;
     await setDoc(doc(db, 'weightLogs', id), {
@@ -342,7 +357,7 @@ export default function App() {
   async function saveWorkout(loggedExercises) {
     await addDoc(collection(db, 'workouts'), {
       profileId: activeProfile,
-      date: todayStr(),
+      date: todayDate,
       dayName: todaysDay.dayName,
       exercises: loggedExercises,
       loggedAt: serverTimestamp()
@@ -367,7 +382,7 @@ export default function App() {
   }
 
   // --- Loading state ---
-  if (!profile || !partner) {
+  if (!profile) {
     return (
       <div style={{ minHeight: '100vh', background: '#000', color: 'rgba(235,235,245,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: '-apple-system, system-ui, sans-serif', fontSize: 13, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
         Loading...
@@ -843,12 +858,16 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
       </div>
 
       {/* Partner card */}
-      <div className="ios-label">{partner.name} Today</div>
-      <div style={{ padding: '0 16px' }}>
-        <button onClick={onToggleProfile} className="ios-group" style={{ width: '100%', border: 'none', textAlign: 'left', color: 'inherit', fontFamily: 'inherit', cursor: 'pointer', padding: 0, display: 'block' }}>
-          <PartnerSummary partner={partner} partnerId={partner.id} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts} />
-        </button>
-      </div>
+      {partner && (
+        <>
+          <div className="ios-label">{partner.name} Today</div>
+          <div style={{ padding: '0 16px' }}>
+            <button onClick={onToggleProfile} className="ios-group" style={{ width: '100%', border: 'none', textAlign: 'left', color: 'inherit', fontFamily: 'inherit', cursor: 'pointer', padding: 0, display: 'block' }}>
+              <PartnerSummary partner={partner} partnerId={partner.id} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts} />
+            </button>
+          </div>
+        </>
+      )}
       <div style={{ textAlign: 'center', padding: '24px 16px 8px', fontSize: 11, color: 'rgba(235,235,245,0.25)', letterSpacing: '0.04em' }}>
         v{APP_VERSION}
       </div>
@@ -893,6 +912,7 @@ function WeightInput({ today, yesterday, onSave }) {
 }
 
 function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWorkouts }) {
+  if (!partner) return null;
   const accent = partnerId === 'jose' ? '#64d2ff' : '#ff8b9b';
   const foods = allFoodLogs.filter(f => f.profileId === partnerId);
   const weights = allWeightLogs.filter(w => w.profileId === partnerId).sort((a, b) => b.date.localeCompare(a.date));
