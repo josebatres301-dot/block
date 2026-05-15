@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -148,6 +148,7 @@ export default function App() {
   const [showWorkoutLogger, setShowWorkoutLogger] = useState(false);
   const [makeupDay, setMakeupDay] = useState(null);
   const [showManageFoods, setShowManageFoods] = useState(false);
+  const [editingFood, setEditingFood] = useState(null);
   const [showMacros, setShowMacros] = useState(false);
   const [showLastWorkouts, setShowLastWorkouts] = useState(false);
   const [undoData, setUndoData] = useState(null);
@@ -411,6 +412,10 @@ export default function App() {
     await deleteDoc(doc(db, 'savedFoods', foodId));
   }
 
+  async function updateSavedFood(foodId, updates) {
+    await updateDoc(doc(db, 'savedFoods', foodId), updates);
+  }
+
   // --- Loading state ---
   if (!profile) {
     return (
@@ -606,7 +611,27 @@ export default function App() {
       )}
 
       {showManageFoods && (
-        <ManageFoodsSheet foods={savedFoods} onClose={() => setShowManageFoods(false)} onDelete={deleteSavedFood} />
+        <ManageFoodsSheet
+          foods={savedFoods}
+          onClose={() => setShowManageFoods(false)}
+          onDelete={deleteSavedFood}
+          onEdit={(food) => { setShowManageFoods(false); setEditingFood(food); }}
+        />
+      )}
+
+      {editingFood && (
+        <FoodEntryModal
+          onClose={() => setEditingFood(null)}
+          savedFoods={savedFoods}
+          prefillFood={null}
+          editingFood={editingFood}
+          activeProfile={profile}
+          partnerProfile={partner}
+          lastPortionForPartner={{}}
+          onLog={() => {}}
+          onCreateNew={() => {}}
+          onUpdateExisting={(id, data) => updateSavedFood(id, data)}
+        />
       )}
 
       {showMacros && (
@@ -1029,14 +1054,30 @@ function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWor
 // FOOD ENTRY (Apple-styled)
 // ============================================================
 
-function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partnerProfile, lastPortionForPartner, onLog, onCreateNew }) {
+function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeProfile, partnerProfile, lastPortionForPartner, onLog, onCreateNew, onUpdateExisting }) {
   const [stage, setStage] = useState(prefillFood ? 'portion' : 'search'); // search → portion
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState(prefillFood || null);
   const [amount, setAmount] = useState(prefillFood?.defaultAmount || 1);
-  // New food
-  const [creating, setCreating] = useState(false);
-  const [newFood, setNewFood] = useState({ name: '', unitType: 'weight', unitName: 'g', calories: '', protein: '', fat: '', carbs: '', defaultAmount: 100 });
+  // New / edit food
+  const [creating, setCreating] = useState(!!editingFood);
+  const [newFood, setNewFood] = useState(() => {
+    if (editingFood) {
+      const isWeight = editingFood.unitType === 'weight';
+      const divisor = isWeight ? 100 : 1;
+      return {
+        name: editingFood.name,
+        unitType: editingFood.unitType,
+        unitName: editingFood.unitName,
+        calories: String((editingFood.perUnit.calories * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
+        protein: String((editingFood.perUnit.protein * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
+        fat: String((editingFood.perUnit.fat * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
+        carbs: String((editingFood.perUnit.carbs * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
+        defaultAmount: editingFood.defaultAmount
+      };
+    }
+    return { name: '', unitType: 'weight', unitName: 'g', calories: '', protein: '', fat: '', carbs: '', defaultAmount: 100 };
+  });
 
   const filtered = useMemo(() => {
     if (!search) return savedFoods;
@@ -1136,27 +1177,24 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
     async function saveNew() {
       const { name, unitType, unitName, calories, protein, fat, carbs, defaultAmount } = newFood;
       if (!name || !calories) return;
-      let perUnit;
-      if (unitType === 'weight') {
-        perUnit = {
-          calories: Number(calories) / 100,
-          protein: Number(protein || 0) / 100,
-          fat: Number(fat || 0) / 100,
-          carbs: Number(carbs || 0) / 100
-        };
+      const divisor = unitType === 'weight' ? 100 : 1;
+      const perUnit = {
+        calories: Number(calories) / divisor,
+        protein: Number(protein || 0) / divisor,
+        fat: Number(fat || 0) / divisor,
+        carbs: Number(carbs || 0) / divisor
+      };
+      const foodData = { name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) || 1 };
+      if (editingFood) {
+        await onUpdateExisting(editingFood.id, foodData);
+        onClose();
       } else {
-        perUnit = {
-          calories: Number(calories),
-          protein: Number(protein || 0),
-          fat: Number(fat || 0),
-          carbs: Number(carbs || 0)
-        };
+        const created = await onCreateNew(foodData);
+        setSelected(created);
+        setAmount(Number(defaultAmount));
+        setCreating(false);
+        setStage('portion');
       }
-      const created = await onCreateNew({ name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) });
-      setSelected(created);
-      setAmount(Number(defaultAmount));
-      setCreating(false);
-      setStage('portion');
     }
 
     const segBg = (active) => active
@@ -1166,8 +1204,8 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, activeProfile, partn
     return (
       <div className="ios-fullscreen">
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
-          <button onClick={() => setCreating(false)} className="ios-btn-text">Back</button>
-          <div style={{ fontSize: 17, fontWeight: 600 }}>New Food</div>
+          <button onClick={() => editingFood ? onClose() : setCreating(false)} className="ios-btn-text">{editingFood ? 'Cancel' : 'Back'}</button>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>{editingFood ? 'Edit Food' : 'New Food'}</div>
           <button onClick={saveNew} disabled={!newFood.name || !newFood.calories} className="ios-btn-text" style={{ fontWeight: 600 }}>Save</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px 24px' }}>
@@ -1840,7 +1878,7 @@ function MacrosSheet({ profile, onClose, onSave }) {
   );
 }
 
-function ManageFoodsSheet({ foods, onClose, onDelete }) {
+function ManageFoodsSheet({ foods, onClose, onDelete, onEdit }) {
   const [filter, setFilter] = useState('');
   const filtered = filter ? foods.filter(f => f.name.toLowerCase().includes(filter.toLowerCase())) : foods;
   return (
@@ -1860,14 +1898,26 @@ function ManageFoodsSheet({ foods, onClose, onDelete }) {
         <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
           <div className="ios-group">
             {filtered.map(f => (
-              <div key={f.id} className="ios-row">
-                <div style={{ flex: 1, minWidth: 0 }}>
+              <div key={f.id} style={{ display: 'flex', alignItems: 'stretch', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+                <button
+                  onClick={() => onEdit(f)}
+                  style={{
+                    flex: 1, background: 'none', border: 'none', padding: '14px 16px',
+                    textAlign: 'left', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit',
+                    display: 'flex', flexDirection: 'column', justifyContent: 'center', minWidth: 0
+                  }}
+                >
                   <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</div>
                   <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
                     {f.perUnit ? `${Math.round(f.perUnit.calories * (f.unitType === 'weight' ? 100 : 1))} cal per ${f.unitType === 'weight' ? '100g' : '1 ' + f.unitName}` : ''} · used {f.timesUsed}×
                   </div>
-                </div>
-                <button onClick={() => onDelete(f.id)} style={{ background: 'none', border: 'none', color: '#ff453a', fontSize: 14, cursor: 'pointer' }}>Delete</button>
+                </button>
+                <button
+                  onClick={() => onDelete(f.id)}
+                  style={{ background: 'none', border: 'none', color: '#ff453a', padding: '14px 16px', cursor: 'pointer', fontSize: 14 }}
+                >
+                  Delete
+                </button>
               </div>
             ))}
           </div>
