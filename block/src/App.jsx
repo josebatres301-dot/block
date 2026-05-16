@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.8';
+const APP_VERSION = '1.9';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -73,24 +73,32 @@ const DEFAULT_PROFILES = {
   yareli: { name: 'Yareli', macros: { calories: 1400, protein: 110, fat: 48, carbs: 128 }, plan: YARELI_PLAN }
 };
 
-// Today's date as YYYY-MM-DD
+// Format a Date as YYYY-MM-DD using the user's LOCAL timezone (not UTC).
+// toISOString() returns UTC and flips the date at 7pm Central — never use it for dates.
+function toLocalDateStr(d) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return toLocalDateStr(new Date());
 }
 
 function yesterdayStr() {
   const d = new Date();
   d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return toLocalDateStr(d);
 }
 
-// Start of current week (Monday) as YYYY-MM-DD
+// Start of current week (Monday) as YYYY-MM-DD in local timezone
 function startOfWeekStr() {
   const d = new Date();
   const daysFromMonday = (d.getDay() === 0 ? 6 : d.getDay() - 1);
   d.setDate(d.getDate() - daysFromMonday);
   d.setHours(0, 0, 0, 0);
-  return d.toISOString().slice(0, 10);
+  return toLocalDateStr(d);
 }
 
 // Training days this week that have already passed and were not logged
@@ -254,14 +262,13 @@ export default function App() {
 
     // Weights — last 14 days for both
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 14);
-    const cutoffStr = cutoff.toISOString().slice(0, 10);
-    unsubs.push(onSnapshot(query(collection(db, 'weightLogs'), where('date', '>=', cutoffStr)), snap => {
+    unsubs.push(onSnapshot(query(collection(db, 'weightLogs'), where('date', '>=', toLocalDateStr(cutoff))), snap => {
       setAllWeightLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }));
 
     // Workouts — last 60 days
     const woCutoff = new Date(); woCutoff.setDate(woCutoff.getDate() - 60);
-    unsubs.push(onSnapshot(query(collection(db, 'workouts'), where('date', '>=', woCutoff.toISOString().slice(0, 10))), snap => {
+    unsubs.push(onSnapshot(query(collection(db, 'workouts'), where('date', '>=', toLocalDateStr(woCutoff))), snap => {
       setAllWorkouts(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }));
 
