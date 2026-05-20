@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '1.9';
+const APP_VERSION = '2.0';
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -164,7 +164,10 @@ export default function App() {
   const [sharePortionFood, setSharePortionFood] = useState(null);
 
   // --- Persisted state (synced from Firestore) ---
-  const [activeProfile, setActiveProfileState] = useState('jose');
+  // Active profile is local to each device so both phones can use independently
+  const [activeProfile, setActiveProfileState] = useState(() => {
+    try { return localStorage.getItem('activeProfile') || 'jose'; } catch { return 'jose'; }
+  });
   const [blockStartDate, setBlockStartDate] = useState(null);
   const [profiles, setProfiles] = useState({ jose: null, yareli: null });
   const [savedFoods, setSavedFoods] = useState([]);
@@ -233,13 +236,9 @@ export default function App() {
     if (!bootstrapped) return;
     const unsubs = [];
 
-    // Household
+    // Household — only blockStartDate; activeProfile is device-local
     unsubs.push(onSnapshot(doc(db, 'household', 'main'), snap => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setActiveProfileState(data.activeProfile || 'jose');
-        setBlockStartDate(data.blockStartDate);
-      }
+      if (snap.exists()) setBlockStartDate(snap.data().blockStartDate);
     }));
 
     // Profiles
@@ -330,9 +329,10 @@ export default function App() {
   }, [allFoodLogs]);
 
   // --- Actions ---
-  async function toggleProfile() {
+  function toggleProfile() {
     const next = activeProfile === 'jose' ? 'yareli' : 'jose';
-    await updateDoc(doc(db, 'household', 'main'), { activeProfile: next });
+    setActiveProfileState(next);
+    try { localStorage.setItem('activeProfile', next); } catch {}
   }
 
   async function logFoodEntry(food, amount, forProfileId) {
@@ -1070,17 +1070,18 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
   const [creating, setCreating] = useState(!!editingFood);
   const [newFood, setNewFood] = useState(() => {
     if (editingFood) {
-      const isWeight = editingFood.unitType === 'weight';
-      const divisor = isWeight ? 100 : 1;
+      // Show macros for one default portion (perUnit × defaultAmount)
+      const portion = editingFood.defaultAmount || 1;
+      const fmt = (n) => { const r = Math.round(n * 10) / 10; return r % 1 === 0 ? String(Math.round(r)) : String(r); };
       return {
         name: editingFood.name,
         unitType: editingFood.unitType,
         unitName: editingFood.unitName,
-        calories: String((editingFood.perUnit.calories * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
-        protein: String((editingFood.perUnit.protein * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
-        fat: String((editingFood.perUnit.fat * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
-        carbs: String((editingFood.perUnit.carbs * divisor).toFixed(isWeight ? 1 : 0)).replace(/\.0$/, ''),
-        defaultAmount: editingFood.defaultAmount
+        calories: fmt(editingFood.perUnit.calories * portion),
+        protein: fmt(editingFood.perUnit.protein * portion),
+        fat: fmt(editingFood.perUnit.fat * portion),
+        carbs: fmt(editingFood.perUnit.carbs * portion),
+        defaultAmount: portion
       };
     }
     return { name: '', unitType: 'weight', unitName: 'g', calories: '', protein: '', fat: '', carbs: '', defaultAmount: 100 };
@@ -1174,31 +1175,34 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
 
   // Stage: CREATING NEW
   if (creating) {
+    // Label updates live as user changes the default portion — makes clear what the macros represent
     const macrosLabel = (() => {
-      if (newFood.unitType === 'weight') return 'PER 100 GRAMS';
-      if (newFood.unitType === 'count') return 'PER 1 ITEM';
-      const names = { cup: 'PER 1 CUP', tbsp: 'PER 1 TABLESPOON', tsp: 'PER 1 TEASPOON', 'fl oz': 'PER 1 FL OZ' };
-      return names[newFood.unitName] || 'PER 1 UNIT';
+      const amt = Number(newFood.defaultAmount) || 1;
+      if (newFood.unitType === 'weight') return `PER ${amt} GRAMS`;
+      if (newFood.unitType === 'count') return `PER ${amt} ${amt === 1 ? 'ITEM' : 'ITEMS'}`;
+      const names = { cup: 'CUP', tbsp: 'TBSP', tsp: 'TSP', 'fl oz': 'FL OZ' };
+      return `PER ${amt} ${names[newFood.unitName] || 'UNIT'}`;
     })();
 
     async function saveNew() {
       const { name, unitType, unitName, calories, protein, fat, carbs, defaultAmount } = newFood;
       if (!name || !calories) return;
-      const divisor = unitType === 'weight' ? 100 : 1;
+      // perUnit = macros entered / defaultAmount (the serving size that defines those macros)
+      const portion = Number(defaultAmount) || 1;
       const perUnit = {
-        calories: Number(calories) / divisor,
-        protein: Number(protein || 0) / divisor,
-        fat: Number(fat || 0) / divisor,
-        carbs: Number(carbs || 0) / divisor
+        calories: Number(calories) / portion,
+        protein: Number(protein || 0) / portion,
+        fat: Number(fat || 0) / portion,
+        carbs: Number(carbs || 0) / portion
       };
-      const foodData = { name, unitType, unitName, perUnit, defaultAmount: Number(defaultAmount) || 1 };
+      const foodData = { name, unitType, unitName, perUnit, defaultAmount: portion };
       if (editingFood) {
         await onUpdateExisting(editingFood.id, foodData);
         onClose();
       } else {
         const created = await onCreateNew(foodData);
         setSelected(created);
-        setAmount(Number(defaultAmount));
+        setAmount(portion);
         setCreating(false);
         setStage('portion');
       }
@@ -1251,6 +1255,16 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
             </div>
           )}
 
+          <div className="ios-label">SERVING SIZE</div>
+          <div className="ios-group">
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>
+                {newFood.unitType === 'weight' ? 'Grams' : newFood.unitType === 'count' ? 'Items' : newFood.unitName === 'cup' ? 'Cups' : newFood.unitName === 'tbsp' ? 'Tablespoons' : newFood.unitName === 'tsp' ? 'Teaspoons' : 'Fl oz'}
+              </div>
+              <input type="number" inputMode="decimal" value={newFood.defaultAmount} onChange={e => setNewFood(p => ({ ...p, defaultAmount: e.target.value }))} className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+            </div>
+          </div>
+
           <div className="ios-label">{macrosLabel}</div>
           <div className="ios-group">
             {[['calories','Calories'],['protein','Protein'],['fat','Fat'],['carbs','Carbs']].map(([k,label]) => (
@@ -1259,16 +1273,6 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
                 <input type="number" inputMode="decimal" value={newFood[k]} onChange={e => setNewFood(p => ({ ...p, [k]: e.target.value }))} placeholder="0" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
               </div>
             ))}
-          </div>
-
-          <div className="ios-label">DEFAULT PORTION (OPTIONAL)</div>
-          <div className="ios-group">
-            <div className="ios-row">
-              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>
-                {newFood.unitType === 'weight' ? 'Grams' : newFood.unitType === 'count' ? 'Items' : newFood.unitName === 'cup' ? 'Cups' : newFood.unitName === 'tbsp' ? 'Tablespoons' : newFood.unitName === 'tsp' ? 'Teaspoons' : 'Fl oz'}
-              </div>
-              <input type="number" inputMode="decimal" value={newFood.defaultAmount} onChange={e => setNewFood(p => ({ ...p, defaultAmount: e.target.value }))} className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
-            </div>
           </div>
         </div>
       </div>
