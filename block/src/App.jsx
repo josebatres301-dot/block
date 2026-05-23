@@ -9,7 +9,11 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
+
+const DISNEY_DATE = '2026-08-22';
+const TRACKER_START = '2026-05-23';     // green days start counting from here
+const TRACKER_START_WEEK = '2026-05-25'; // first full Mon-Sun week for shared workouts
 
 const SEED_FOODS = [
   { name: 'Chicken Breast, cooked', unitType: 'weight', unitName: 'g', perUnit: { calories: 1.65, protein: 0.31, fat: 0.036, carbs: 0 }, defaultAmount: 226, timesUsed: 0 },
@@ -92,6 +96,26 @@ function yesterdayStr() {
   return toLocalDateStr(d);
 }
 
+function daysUntilDisney() {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const disney = new Date(DISNEY_DATE + 'T00:00:00');
+  return Math.max(0, Math.round((disney - today) / 86400000));
+}
+function weeksUntilDisney() {
+  return Math.ceil(daysUntilDisney() / 7);
+}
+
+function isGreenDay(dayLogs, macros) {
+  if (dayLogs.length === 0) return false;
+  const totals = dayLogs.reduce((a, f) => ({
+    calories: a.calories + (f.calories || 0),
+    protein: a.protein + (f.protein || 0)
+  }), { calories: 0, protein: 0 });
+  const calOk = totals.calories >= macros.calories * 0.8 && totals.calories <= macros.calories * 1.0;
+  const proOk = totals.protein >= macros.protein * 0.8;
+  return calOk && proOk;
+}
+
 // Start of current week (Monday) as YYYY-MM-DD in local timezone
 function startOfWeekStr() {
   const d = new Date();
@@ -172,6 +196,7 @@ export default function App() {
   const [profiles, setProfiles] = useState({ jose: null, yareli: null });
   const [savedFoods, setSavedFoods] = useState([]);
   const [allFoodLogs, setAllFoodLogs] = useState([]); // today's food logs for both profiles
+  const [allHistoryFoodLogs, setAllHistoryFoodLogs] = useState([]); // from TRACKER_START for green-day calc
   const [allWeightLogs, setAllWeightLogs] = useState([]); // both profiles
   const [allWorkouts, setAllWorkouts] = useState([]); // both profiles
   const [lastPortion, setLastPortion] = useState({ jose: {}, yareli: {} });
@@ -259,6 +284,11 @@ export default function App() {
       setAllFoodLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     }));
 
+    // History food logs from TRACKER_START — used for green-day calculation
+    unsubs.push(onSnapshot(query(collection(db, 'foodLogs'), where('date', '>=', TRACKER_START)), snap => {
+      setAllHistoryFoodLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }));
+
     // Weights — last 14 days for both
     const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 14);
     unsubs.push(onSnapshot(query(collection(db, 'weightLogs'), where('date', '>=', toLocalDateStr(cutoff))), snap => {
@@ -316,6 +346,57 @@ export default function App() {
     const now = new Date();
     return Math.max(1, Math.floor((now - start) / 86400000) + 1);
   }, [blockStartDate]);
+
+  const greenDaysData = useMemo(() => {
+    if (!profile) return { total: 0, last7: [], streak: 0 };
+    const today = todayStr();
+    const byDate = {};
+    allHistoryFoodLogs.filter(l => l.profileId === activeProfile).forEach(l => {
+      if (!byDate[l.date]) byDate[l.date] = [];
+      byDate[l.date].push(l);
+    });
+    const dates = [];
+    const d = new Date(TRACKER_START + 'T00:00:00');
+    const todayD = new Date(today + 'T00:00:00');
+    while (d < todayD) {
+      dates.push(toLocalDateStr(d));
+      d.setDate(d.getDate() + 1);
+    }
+    const greenSet = new Set(dates.filter(date => isGreenDay(byDate[date] || [], profile.macros)));
+    const last7 = dates.slice(-7).map(date => ({ date, green: greenSet.has(date) }));
+    let streak = 0;
+    for (let i = dates.length - 1; i >= 0; i--) {
+      if (greenSet.has(dates[i])) streak++; else break;
+    }
+    return { total: greenSet.size, last7, streak };
+  }, [allHistoryFoodLogs, activeProfile, profile]);
+
+  const goodWeeksData = useMemo(() => {
+    function weekStartOf(dateStr) {
+      const dt = new Date(dateStr + 'T00:00:00');
+      const day = dt.getDay();
+      const fromMon = day === 0 ? 6 : day - 1;
+      dt.setDate(dt.getDate() - fromMon);
+      return toLocalDateStr(dt);
+    }
+    const weeks = {};
+    allWorkouts.forEach(w => {
+      if (w.date < TRACKER_START_WEEK) return;
+      const ws = weekStartOf(w.date);
+      if (!weeks[ws]) weeks[ws] = { jose: new Set(), yareli: new Set() };
+      if (weeks[ws][w.profileId]) weeks[ws][w.profileId].add(w.dayName);
+    });
+    const dt = new Date(); const day = dt.getDay();
+    dt.setDate(dt.getDate() - (day === 0 ? 6 : day - 1)); dt.setHours(0, 0, 0, 0);
+    const currentWeekStart = toLocalDateStr(dt);
+    let goodCount = 0;
+    Object.entries(weeks).forEach(([ws, data]) => {
+      if (ws === currentWeekStart) return;
+      if (data.jose.size >= 2 && data.yareli.size >= 2) goodCount++;
+    });
+    const cw = weeks[currentWeekStart] || { jose: new Set(), yareli: new Set() };
+    return { goodCount, currentWeek: { jose: cw.jose.size, yareli: cw.yareli.size } };
+  }, [allWorkouts]);
 
   // Build a "lastPortion" map from existing food logs for share defaults
   useEffect(() => {
@@ -578,6 +659,10 @@ export default function App() {
           onOpenSettings={() => setView('settings')}
           missedThisWeek={missedThisWeek}
           onStartMakeup={(day) => setMakeupDay(day)}
+          greenDaysData={greenDaysData}
+          goodWeeksData={goodWeeksData}
+          disneyDays={daysUntilDisney()}
+          disneyWeeks={weeksUntilDisney()}
         />
       )}
       {view === 'settings' && (
@@ -770,7 +855,7 @@ function getFoodSummary(food) {
 // HOME PAGE
 // ============================================================
 
-function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup }) {
+function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
@@ -818,6 +903,46 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
           </svg>
         </button>
       </header>
+
+      {/* Disney countdown + motivation tracker */}
+      <div style={{ padding: '4px 16px 0' }}>
+        <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 16 }}>🏰</span>
+              <span style={{ fontSize: 16, fontWeight: 600 }}>{disneyDays} days to Disney</span>
+            </div>
+            <span className="day-counter">{disneyWeeks} weeks</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
+            <div>
+              <div style={{ fontSize: 13, color: 'rgba(235,235,245,0.6)' }}>Your green days</div>
+              <div className="ios-num" style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>
+                {greenDaysData.total} total{greenDaysData.streak > 1 ? ` · ${greenDaysData.streak} streak` : ''}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 5 }}>
+              {greenDaysData.last7.map((d, i) => (
+                <div key={i} style={{ width: 9, height: 9, borderRadius: 5, background: d.green ? '#30d158' : 'rgba(120,120,128,0.35)' }} />
+              ))}
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: 10, marginTop: 10, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
+            <div>
+              <div style={{ fontSize: 13, color: 'rgba(235,235,245,0.6)' }}>Workouts together</div>
+              <div className="ios-num" style={{ fontSize: 15, fontWeight: 600, marginTop: 2 }}>
+                {goodWeeksData.goodCount} good {goodWeeksData.goodCount === 1 ? 'week' : 'weeks'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+              {[0, 1, 2].map(i => {
+                const bothHit = Math.min(goodWeeksData.currentWeek.jose, goodWeeksData.currentWeek.yareli);
+                return <div key={i} style={{ width: 9, height: 9, borderRadius: 5, background: i < bothHit ? '#30d158' : 'rgba(120,120,128,0.35)' }} />;
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Workout slim card — training day only */}
       {todaysDay && !workoutDone && (
