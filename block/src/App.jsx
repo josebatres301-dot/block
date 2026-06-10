@@ -163,17 +163,6 @@ async function getOrInitBlockStart() {
 // ============================================================
 
 // Smith machine plate presets (Jose's gym: 5s, 10s, 25s, 45s)
-const PLATE_PRESETS = [
-  '+ 5', '+ 10', '+ 25', '+ 35',
-  'Plate', 'Plate + 5', 'Plate + 10', 'Plate + 25', 'Plate + 35',
-  '2 Plates', '2 Plates + 5', '2 Plates + 10', '2 Plates + 25', '2 Plates + 35',
-  '3 Plates'
-];
-
-function isSmithExercise(name) {
-  return name.toLowerCase().startsWith('smith');
-}
-
 // ============================================================
 // MAIN APP
 // ============================================================
@@ -189,6 +178,11 @@ export default function App() {
   const [editingFood, setEditingFood] = useState(null);
   const [showMacros, setShowMacros] = useState(false);
   const [showLastWorkouts, setShowLastWorkouts] = useState(false);
+  const [showPlanEditor, setShowPlanEditor] = useState(false);
+  const [showDayPicker, setShowDayPicker] = useState(false);
+  const [workoutDraft, setWorkoutDraft] = useState(() => {
+    try { const d = localStorage.getItem('pair:workoutDraft'); return d ? JSON.parse(d) : null; } catch { return null; }
+  });
   const [undoData, setUndoData] = useState(null);
   const [shareToast, setShareToast] = useState(null);
   const [sharePortionFood, setSharePortionFood] = useState(null);
@@ -467,6 +461,15 @@ export default function App() {
     });
   }
 
+  function saveDraft(draft) {
+    try { localStorage.setItem('pair:workoutDraft', JSON.stringify(draft)); } catch {}
+    setWorkoutDraft(draft);
+  }
+  function clearDraft() {
+    try { localStorage.removeItem('pair:workoutDraft'); } catch {}
+    setWorkoutDraft(null);
+  }
+
   async function saveWorkout(loggedExercises, dayName) {
     const docId = `${activeProfile}_${todayDate}_${dayName.replace(/\s+/g, '')}`;
     await setDoc(doc(db, 'workouts', docId), {
@@ -480,6 +483,10 @@ export default function App() {
 
   async function updateMacros(newMacros) {
     await updateDoc(doc(db, 'profiles', activeProfile), { macros: newMacros });
+  }
+
+  async function updatePlan(newPlan) {
+    await updateDoc(doc(db, 'profiles', activeProfile), { plan: newPlan });
   }
 
   async function addSavedFood(food) {
@@ -654,6 +661,13 @@ export default function App() {
           onOpenSettings={() => setView('settings')}
           missedThisWeek={missedThisWeek}
           onStartMakeup={(day) => setMakeupDay(day)}
+          onPickAnyDay={() => setShowDayPicker(true)}
+          workoutDraft={workoutDraft?.profileId === activeProfile ? workoutDraft : null}
+          onResumeWorkout={() => {
+            if (!workoutDraft || workoutDraft.profileId !== activeProfile) return;
+            const day = profile?.plan?.trainingDays.find(d => d.dayName === workoutDraft.dayName);
+            if (day) { if (day === todaysDay) setShowWorkoutLogger(true); else setMakeupDay(day); }
+          }}
           greenDaysData={greenDaysData}
           goodWeeksData={goodWeeksData}
           disneyDays={daysUntilDisney()}
@@ -667,6 +681,7 @@ export default function App() {
           onMacros={() => setShowMacros(true)}
           onFoods={() => setShowManageFoods(true)}
           onLastWorkouts={() => setShowLastWorkouts(true)}
+          onPlanEditor={() => setShowPlanEditor(true)}
         />
       )}
 
@@ -686,15 +701,25 @@ export default function App() {
       )}
 
       {showWorkoutLogger && todaysDay && (
-        <WorkoutLogger day={todaysDay} onClose={() => setShowWorkoutLogger(false)} onSave={(logged) => saveWorkout(logged, todaysDay.dayName)} />
+        <WorkoutLogger day={todaysDay} onClose={() => { setShowWorkoutLogger(false); clearDraft(); }} onSave={(logged) => { saveWorkout(logged, todaysDay.dayName); clearDraft(); }} allWorkouts={allWorkouts} activeProfile={activeProfile} draftLogged={workoutDraft?.profileId === activeProfile && workoutDraft?.dayName === todaysDay?.dayName ? workoutDraft.logged : null} onDraftChange={(logged) => saveDraft({ profileId: activeProfile, dayName: todaysDay.dayName, logged })} />
       )}
 
       {makeupDay && (
-        <WorkoutLogger day={makeupDay} onClose={() => setMakeupDay(null)} onSave={(logged) => { saveWorkout(logged, makeupDay.dayName); setMakeupDay(null); }} />
+        <WorkoutLogger day={makeupDay} onClose={() => { setMakeupDay(null); clearDraft(); }} onSave={(logged) => { saveWorkout(logged, makeupDay.dayName); setMakeupDay(null); clearDraft(); }} allWorkouts={allWorkouts} activeProfile={activeProfile} draftLogged={workoutDraft?.profileId === activeProfile && workoutDraft?.dayName === makeupDay?.dayName ? workoutDraft.logged : null} onDraftChange={(logged) => saveDraft({ profileId: activeProfile, dayName: makeupDay.dayName, logged })} />
       )}
 
       {showLastWorkouts && (
         <LastWorkoutsSheet workouts={myWorkouts} onClose={() => setShowLastWorkouts(false)} />
+      )}
+
+      {showDayPicker && (
+        <DayPickerSheet plan={profile?.plan} onClose={() => setShowDayPicker(false)} onPick={(day) => { setShowDayPicker(false); setMakeupDay(day); }} />
+      )}
+
+      {showPlanEditor && profile && (
+        <div style={{ position: 'fixed', inset: 0, background: '#000', zIndex: 50, paddingTop: 'env(safe-area-inset-top)' }}>
+          <PlanEditorPage profile={profile} onBack={() => setShowPlanEditor(false)} onSave={async (plan) => { await updatePlan(plan); setShowPlanEditor(false); }} />
+        </div>
       )}
 
       {showManageFoods && (
@@ -850,7 +875,7 @@ function getFoodSummary(food) {
 // HOME PAGE
 // ============================================================
 
-function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
+function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, onPickAnyDay, workoutDraft, onResumeWorkout, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
@@ -960,14 +985,51 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
       )}
       {todaysDay && workoutDone && (
         <div style={{ padding: '8px 16px 0' }}>
-          <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: 0.7 }}>
+          <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(48,209,88,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#30d158" strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
-              <div style={{ fontSize: 15, fontWeight: 500 }}>{todaysDay.dayName} day · Logged</div>
+              <div style={{ fontSize: 15, fontWeight: 500, opacity: 0.7 }}>{todaysDay.dayName} day · Logged</div>
             </div>
+            <button onClick={onPickAnyDay} className="ios-btn-text" style={{ fontSize: 13 }}>+ Other</button>
           </div>
+        </div>
+      )}
+
+      {/* Rest day — offer to start any workout */}
+      {!todaysDay && (
+        <div style={{ padding: '8px 16px 0' }}>
+          <button onClick={onPickAnyDay} style={{ width: '100%', background: '#1c1c1e', border: 'none', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(120,120,128,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.5)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6.5 6.5l11 11"/><path d="M21 21l-1-1"/><path d="M3 3l1 1"/><path d="M18 22l4-4"/><path d="M2 6l4-4"/><path d="M3 10l7-7"/><path d="M14 21l7-7"/></svg>
+              </div>
+              <div style={{ textAlign: 'left' }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: 'rgba(235,235,245,0.8)' }}>Rest day</div>
+                <div style={{ fontSize: 12, color: 'rgba(235,235,245,0.4)', marginTop: 1 }}>Start a workout anyway</div>
+              </div>
+            </div>
+            <div style={{ color: 'rgba(235,235,245,0.4)', fontSize: 15 }}>→</div>
+          </button>
+        </div>
+      )}
+
+      {/* Draft resume card */}
+      {workoutDraft && (
+        <div style={{ padding: '8px 16px 0' }}>
+          <button onClick={onResumeWorkout} style={{ width: '100%', background: 'rgba(10,132,255,0.10)', border: '1px solid rgba(10,132,255,0.25)', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(10,132,255,0.20)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" strokeWidth="2.5" strokeLinecap="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              </div>
+              <div style={{ textAlign: 'left' }}>
+                <div style={{ fontSize: 15, fontWeight: 600, color: '#0a84ff' }}>Resume {workoutDraft.dayName}</div>
+                <div style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>In-progress workout</div>
+              </div>
+            </div>
+            <div style={{ color: '#0a84ff', fontSize: 15, fontWeight: 500 }}>Resume</div>
+          </button>
         </div>
       )}
 
@@ -1588,14 +1650,29 @@ function SharePortionSheet({ food, yourAmount, partner, lastPartnerPortion, onCl
 // WORKOUT LOGGER (Apple-styled)
 // ============================================================
 
-function WorkoutLogger({ day, onClose, onSave }) {
+function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile = '', draftLogged = null, onDraftChange }) {
   const [exerciseIdx, setExerciseIdx] = useState(0);
   const [activeSetIdx, setActiveSetIdx] = useState(0);
-  const [platePickerSet, setPlatePickerSet] = useState(null); // which set index has picker open
-  const [logged, setLogged] = useState(day.exercises.map(ex => ({
-    exerciseId: ex.id, name: ex.name, prescribedWeight: ex.weight, progression: ex.progression, compound: ex.compound,
-    sets: Array.from({ length: ex.sets }, () => ({ weight: isSmithExercise(ex.name) ? null : ex.weight, reps: null })), rpe: 7
-  })));
+
+  // Last-time data: for each exercise name, find the most recent logged sets for this profile
+  const lastTimeByExName = useMemo(() => {
+    const myWorkouts = allWorkouts.filter(w => w.profileId === activeProfile);
+    myWorkouts.sort((a, b) => (b.date > a.date ? 1 : -1));
+    const map = {};
+    for (const w of myWorkouts) {
+      for (const ex of (w.exercises || [])) {
+        if (!map[ex.name]) map[ex.name] = ex.sets;
+      }
+    }
+    return map;
+  }, [allWorkouts, activeProfile]);
+
+  const [logged, setLogged] = useState(() =>
+    draftLogged || day.exercises.map(ex => ({
+      exerciseId: ex.id, name: ex.name, prescribedWeight: ex.weight, progression: ex.progression, compound: ex.compound,
+      sets: Array.from({ length: ex.sets }, () => ({ weight: null, reps: null })), rpe: 7
+    }))
+  );
   const [restTimer, setRestTimer] = useState(0);
   const [restActive, setRestActive] = useState(false);
   const restRef = useRef(null);
@@ -1607,6 +1684,11 @@ function WorkoutLogger({ day, onClose, onSave }) {
     restRef.current = setInterval(() => setRestTimer(t => { if (t <= 1) { setRestActive(false); return 0; } return t - 1; }), 1000);
     return () => clearInterval(restRef.current);
   }, [restActive]);
+
+  // Persist draft on every change
+  useEffect(() => {
+    if (onDraftChange) onDraftChange(logged);
+  }, [logged]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ex = day.exercises[exerciseIdx];
   const currentLog = logged[exerciseIdx];
@@ -1624,9 +1706,7 @@ function WorkoutLogger({ day, onClose, onSave }) {
     setLogged(prev => prev.map((l, i) => i === exerciseIdx ? { ...l, sets: l.sets.map((s, j) => {
       if (j !== setIdx) return s;
       if (value === '' || value == null) return { ...s, [field]: null };
-      // Keep string for plate notation, convert to number otherwise
-      const isPlateString = field === 'weight' && typeof value === 'string' && /[a-zA-Z+]/.test(value);
-      return { ...s, [field]: isPlateString ? value : Number(value) };
+      return { ...s, [field]: Number(value) };
     }) } : l));
   }
   function setRpe(rpe) { setLogged(prev => prev.map((l, i) => i === exerciseIdx ? { ...l, rpe } : l)); }
@@ -1744,10 +1824,22 @@ function WorkoutLogger({ day, onClose, onSave }) {
       {/* Exercise body */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px' }}>
         <div style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em', marginBottom: 4 }}>{ex.name}</div>
-        <div className="ios-num" style={{ fontSize: 14, color: 'rgba(235,235,245,0.6)', marginBottom: 20 }}>
-          Target: {ex.sets} × {ex.repLow}–{ex.repHigh} reps
-          {ex.note && <span style={{ marginLeft: 6 }}>· {ex.note}</span>}
-        </div>
+        {(() => {
+          const lastSets = (lastTimeByExName[ex.name] || []).filter(s => s.reps > 0);
+          const s0 = lastSets[0];
+          return (
+            <div style={{ marginBottom: 20 }}>
+              <div className="ios-num" style={{ fontSize: 14, color: 'rgba(235,235,245,0.6)', marginBottom: s0 ? 2 : 0 }}>
+                Target: {ex.sets} × {ex.repLow}–{ex.repHigh} reps{ex.note && <span style={{ marginLeft: 6 }}>· {ex.note}</span>}
+              </div>
+              {s0 && (
+                <div style={{ fontSize: 12, color: 'rgba(235,235,245,0.4)' }}>
+                  Last time: {s0.weight ? `${s0.weight} lb × ` : ''}{s0.reps} reps
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Sets list */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
@@ -1787,43 +1879,25 @@ function WorkoutLogger({ day, onClose, onSave }) {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {isSmithExercise(ex.name) ? (
-                    <button
-                      onClick={() => { setActiveSetIdx(i); setPlatePickerSet(i); }}
+                  <>
+                    <input
+                      type="number" inputMode="decimal" step="2.5" value={set.weight ?? ''}
+                      onChange={e => updateSet(i, 'weight', e.target.value)}
+                      onFocus={() => setActiveSetIdx(i)}
+                      placeholder={lastTimeByExName[ex.name]?.[i]?.weight ?? ''}
                       className="ios-num"
                       style={{
                         background: 'rgba(120,120,128,0.20)', border: 'none', outline: 'none',
-                        color: set.weight ? '#fff' : 'rgba(235,235,245,0.4)',
-                        fontSize: isActive ? 14 : 12, fontWeight: 600,
-                        textAlign: 'center', minWidth: isActive ? 110 : 96,
-                        padding: isActive ? '8px 10px' : '6px 8px',
-                        borderRadius: 8,
-                        fontFamily: 'inherit', cursor: 'pointer',
+                        color: '#fff',
+                        fontSize: isActive ? 19 : 16, fontWeight: 600,
+                        textAlign: 'center', width: isActive ? 70 : 60,
+                        padding: isActive ? '8px 0' : '6px 0',
+                        borderRadius: 8, caretColor: '#0a84ff',
                         transition: 'all 0.15s'
                       }}
-                    >
-                      {set.weight || 'Tap to set'}
-                    </button>
-                  ) : (
-                    <>
-                      <input
-                        type="number" inputMode="decimal" step="2.5" value={set.weight ?? ''}
-                        onChange={e => updateSet(i, 'weight', e.target.value)}
-                        onFocus={() => setActiveSetIdx(i)}
-                        className="ios-num"
-                        style={{
-                          background: 'rgba(120,120,128,0.20)', border: 'none', outline: 'none',
-                          color: '#fff',
-                          fontSize: isActive ? 19 : 16, fontWeight: 600,
-                          textAlign: 'center', width: isActive ? 70 : 60,
-                          padding: isActive ? '8px 0' : '6px 0',
-                          borderRadius: 8, caretColor: '#0a84ff',
-                          transition: 'all 0.15s'
-                        }}
-                      />
-                      <span style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)' }}>lb</span>
-                    </>
-                  )}
+                    />
+                    <span style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)' }}>lb</span>
+                  </>
                   <span style={{ margin: '0 2px', color: 'rgba(235,235,245,0.3)' }}>×</span>
                   <input
                     ref={el => { if (el) repsRefs.current[i] = el; }}
@@ -1880,36 +1954,6 @@ function WorkoutLogger({ day, onClose, onSave }) {
         )}
       </div>
 
-      {/* Plate picker for Smith exercises */}
-      {platePickerSet !== null && (
-        <div className="ios-modal-backdrop" onClick={() => setPlatePickerSet(null)}>
-          <div className="ios-sheet" style={{ maxHeight: '70vh' }} onClick={e => e.stopPropagation()}>
-            <div className="ios-grabber" />
-            <div style={{ padding: '12px 16px 8px', fontSize: 13, color: 'rgba(235,235,245,0.5)', textAlign: 'center' }}>
-              Set {platePickerSet + 1} · {ex.name}
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', padding: '0 16px 24px' }}>
-              <div className="ios-group">
-                {PLATE_PRESETS.map(preset => (
-                  <button
-                    key={preset}
-                    onClick={() => {
-                      updateSet(platePickerSet, 'weight', preset);
-                      setPlatePickerSet(null);
-                    }}
-                    className="ios-row-button"
-                  >
-                    <div style={{ fontSize: 17 }}>{preset}</div>
-                    {currentLog.sets[platePickerSet]?.weight === preset && (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" strokeWidth="2.5" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1943,7 +1987,7 @@ function shortenExName(name) {
 // SETTINGS
 // ============================================================
 
-function SettingsPage({ profile, onBack, onMacros, onFoods, onLastWorkouts }) {
+function SettingsPage({ profile, onBack, onMacros, onFoods, onLastWorkouts, onPlanEditor }) {
   return (
     <div style={{ minHeight: '100vh' }}>
       <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -1975,6 +2019,10 @@ function SettingsPage({ profile, onBack, onMacros, onFoods, onLastWorkouts }) {
             <div style={{ fontSize: 15 }}>Last workouts</div>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
+          <button onClick={onPlanEditor} className="ios-row-button">
+            <div style={{ fontSize: 15 }}>Edit workout plan</div>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
         </div>
 
         <div className="ios-label">Foods</div>
@@ -1984,6 +2032,148 @@ function SettingsPage({ profile, onBack, onMacros, onFoods, onLastWorkouts }) {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DayPickerSheet({ plan, onClose, onPick }) {
+  if (!plan) return null;
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return (
+    <div className="ios-modal-backdrop" onClick={onClose}>
+      <div className="ios-sheet" onClick={e => e.stopPropagation()}>
+        <div className="ios-grabber" />
+        <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+          <button onClick={onClose} className="ios-btn-text">Cancel</button>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>Start a Workout</div>
+          <div style={{ width: 60 }} />
+        </div>
+        <div style={{ padding: '12px 16px 24px' }}>
+          <div className="ios-group">
+            {plan.trainingDays.map(day => (
+              <button key={day.dayName} onClick={() => onPick(day)} className="ios-row-button">
+                <div>
+                  <div style={{ fontSize: 15 }}>{day.dayName} day</div>
+                  <div style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>{DOW[day.dayOfWeek]} · {day.exercises.length} exercises</div>
+                </div>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PlanEditorPage({ profile, onBack, onSave }) {
+  const [plan, setPlan] = useState(() => JSON.parse(JSON.stringify(profile.plan)));
+  const [saving, setSaving] = useState(false);
+  const [dragging, setDragging] = useState(null); // { dayIdx, exIdx }
+  const rowRefs = useRef({});
+  const dragCtx = useRef(null);
+  const planRef = useRef(plan);
+  useEffect(() => { planRef.current = plan; }, [plan]);
+
+  function onDragStart(e, dayIdx, exIdx) {
+    e.preventDefault();
+    dragCtx.current = { dayIdx, exIdx };
+    setDragging({ dayIdx, exIdx });
+
+    function onMove(mv) {
+      if (!dragCtx.current) return;
+      const { dayIdx: dIdx, exIdx: curIdx } = dragCtx.current;
+      const n = planRef.current.trainingDays[dIdx].exercises.length;
+      const clientY = mv.clientY;
+      for (let i = 0; i < n; i++) {
+        if (i === curIdx) continue;
+        const el = rowRefs.current[`${dIdx}-${i}`];
+        if (!el) continue;
+        const rect = el.getBoundingClientRect();
+        const center = rect.top + rect.height / 2;
+        if ((i > curIdx && clientY > center) || (i < curIdx && clientY < center)) {
+          const newIdx = i;
+          setPlan(prev => {
+            const next = JSON.parse(JSON.stringify(prev));
+            const exs = next.trainingDays[dIdx].exercises;
+            const [moved] = exs.splice(curIdx, 1);
+            exs.splice(newIdx, 0, moved);
+            return next;
+          });
+          dragCtx.current.exIdx = newIdx;
+          setDragging({ dayIdx: dIdx, exIdx: newIdx });
+          break;
+        }
+      }
+    }
+
+    function onUp() {
+      dragCtx.current = null;
+      setDragging(null);
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  async function save() {
+    setSaving(true);
+    try { await onSave(plan); } finally { setSaving(false); }
+  }
+
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  return (
+    <div style={{ minHeight: '100vh' }}>
+      <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+        <button onClick={onBack} className="ios-btn-text">Cancel</button>
+        <div style={{ fontSize: 17, fontWeight: 600 }}>Edit Plan</div>
+        <button onClick={save} disabled={saving} className="ios-btn-text" style={{ fontWeight: 600 }}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+      <div style={{ padding: '12px 16px 24px' }}>
+        {plan.trainingDays.map((day, dayIdx) => (
+          <div key={day.dayName}>
+            <div className={`ios-label${dayIdx === 0 ? ' ios-section-first' : ''}`}>
+              {day.dayName} · {DOW[day.dayOfWeek]}
+            </div>
+            <div className="ios-group">
+              {day.exercises.map((ex, exIdx) => {
+                const isDragged = dragging?.dayIdx === dayIdx && dragging?.exIdx === exIdx;
+                return (
+                  <div
+                    key={ex.id}
+                    ref={el => { rowRefs.current[`${dayIdx}-${exIdx}`] = el; }}
+                    style={{
+                      display: 'flex', alignItems: 'center',
+                      padding: '10px 12px',
+                      background: isDragged ? 'rgba(10,132,255,0.10)' : 'transparent',
+                      borderBottom: exIdx < day.exercises.length - 1 ? '0.5px solid rgba(84,84,88,0.35)' : undefined,
+                    }}
+                  >
+                    <div
+                      onPointerDown={e => onDragStart(e, dayIdx, exIdx)}
+                      style={{ padding: '8px 14px 8px 4px', cursor: 'grab', touchAction: 'none', color: 'rgba(235,235,245,0.35)', userSelect: 'none', flexShrink: 0 }}
+                    >
+                      <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor">
+                        <rect y="0" width="16" height="2" rx="1"/>
+                        <rect y="5" width="16" height="2" rx="1"/>
+                        <rect y="10" width="16" height="2" rx="1"/>
+                      </svg>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ex.name}</div>
+                      <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>
+                        {ex.sets} × {ex.repLow}–{ex.repHigh} · {ex.weight} lb
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
