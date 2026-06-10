@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 
 const DISNEY_DATE = '2026-08-22';
 const TRACKER_START = '2026-05-23';     // green days start counting from here
@@ -650,7 +650,7 @@ export default function App() {
       {view === 'home' && (
         <HomePage
           profile={profile} partner={partner} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts}
-          consumed={consumed} foods={foods} weights={weights}
+          consumed={consumed} foods={foods} weights={weights} savedFoods={savedFoods}
           yesterdayWeight={yesterdayWeight} todaysDay={todaysDay} workoutDone={workoutDone} dayCount={dayCount}
           onToggleProfile={toggleProfile}
           onAddFood={() => { setPrefillFood(null); setShowFoodEntry(true); }}
@@ -875,7 +875,7 @@ function getFoodSummary(food) {
 // HOME PAGE
 // ============================================================
 
-function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, onPickAnyDay, workoutDraft, onResumeWorkout, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
+function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, savedFoods, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, onPickAnyDay, workoutDraft, onResumeWorkout, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
@@ -910,7 +910,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1 }}>{profile.name}</span>
-              <span className="day-counter">Day {dayCount}</span>
+              <span className="day-counter">{dayCount > 84 ? `Block done · Day ${dayCount}` : `Wk ${Math.ceil(dayCount / 7)} · Day ${((dayCount - 1) % 7) + 1}`}</span>
             </div>
             <div style={{ fontSize: 13, color: 'rgba(235,235,245,0.6)', marginTop: 4 }}>{dateStr}</div>
           </div>
@@ -1062,6 +1062,29 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
         </div>
       </div>
 
+      {/* Quick-add chips — top 4 most-used foods */}
+      {savedFoods && savedFoods.length > 0 && (() => {
+        const top = [...savedFoods].sort((a, b) => (b.timesUsed || 0) - (a.timesUsed || 0)).slice(0, 4);
+        return (
+          <div className="hide-scrollbar" style={{ display: 'flex', gap: 8, padding: '12px 16px 4px', overflowX: 'auto' }}>
+            {top.map(f => (
+              <button
+                key={f.id}
+                onClick={() => onQuickAdd(f)}
+                style={{
+                  flexShrink: 0, background: '#1c1c1e', border: 'none', borderRadius: 999,
+                  padding: '7px 14px', fontSize: 13, color: 'rgba(235,235,245,0.85)',
+                  fontFamily: 'inherit', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" strokeWidth="3" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                {f.name.length > 16 ? f.name.slice(0, 15) + '…' : f.name}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
       {/* Today's Food */}
       <div className="ios-label" style={{ marginTop: 12 }}>Today's Food</div>
       <div style={{ padding: '0 16px' }}>
@@ -1181,9 +1204,25 @@ function WeightInput({ today, yesterday, onSave }) {
     if (!isNaN(n) && n > 0) onSave(n);
   }
 
+  const trend = (() => {
+    if (!today || !yesterday) return null;
+    const diff = today.weight - yesterday;
+    if (Math.abs(diff) < 0.1) return null;
+    return diff < 0
+      ? { arrow: '↓', color: '#30d158', label: diff.toFixed(1) }
+      : { arrow: '↑', color: '#ff453a', label: `+${diff.toFixed(1)}` };
+  })();
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
-      <div style={{ fontSize: 15 }}>Weight</div>
+      <div>
+        <div style={{ fontSize: 15 }}>Weight</div>
+        {trend && (
+          <div className="ios-num" style={{ fontSize: 12, color: trend.color, marginTop: 1 }}>
+            {trend.arrow} {trend.label} lb from yesterday
+          </div>
+        )}
+      </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
         <input
           type="number" inputMode="decimal" step="0.1"
@@ -1271,9 +1310,10 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
   });
 
   const filtered = useMemo(() => {
-    if (!search) return savedFoods;
-    const s = search.toLowerCase();
-    return savedFoods.filter(f => f.name.toLowerCase().includes(s));
+    const base = search
+      ? savedFoods.filter(f => f.name.toLowerCase().includes(search.toLowerCase()))
+      : savedFoods;
+    return [...base].sort((a, b) => (b.timesUsed || 0) - (a.timesUsed || 0));
   }, [search, savedFoods]);
 
   const exactMatch = useMemo(() => {
