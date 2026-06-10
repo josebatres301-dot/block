@@ -132,9 +132,9 @@ function startOfWeekStr() {
 }
 
 // Training days this week that have already passed and were not logged
-function getMissedThisWeek(profile, allWorkouts, profileId) {
+function getMissedThisWeek(profile, allWorkouts, profileId, todayDate) {
   if (!profile?.plan?.trainingDays) return [];
-  const currentDow = new Date().getDay();
+  const currentDow = parseLocalDate(todayDate).getDay();
   const weekStart = startOfWeekStr();
   const loggedDayNames = new Set(
     allWorkouts.filter(w => w.profileId === profileId && w.date >= weekStart).map(w => w.dayName)
@@ -186,6 +186,8 @@ export default function App() {
   const [undoData, setUndoData] = useState(null);
   const [shareToast, setShareToast] = useState(null);
   const [sharePortionFood, setSharePortionFood] = useState(null);
+  const [editingLog, setEditingLog] = useState(null);
+  const [reopenSeed, setReopenSeed] = useState(null);
 
   // --- Persisted state (synced from Firestore) ---
   // Active profile is local to each device so both phones can use independently
@@ -320,12 +322,13 @@ export default function App() {
     carbs: acc.carbs + (f.carbs || 0)
   }), { calories: 0, protein: 0, fat: 0, carbs: 0 }), [foods]);
 
-  const todaysDay = profile?.plan?.trainingDays.find(d => d.dayOfWeek === new Date().getDay());
+  const todayDow = parseLocalDate(todayDate).getDay();
+  const todaysDay = profile?.plan?.trainingDays.find(d => d.dayOfWeek === todayDow);
   const workoutDone = allWorkouts.some(w => w.profileId === activeProfile && w.date === todayDate && w.dayName === todaysDay?.dayName);
 
   const missedThisWeek = useMemo(() =>
-    profile ? getMissedThisWeek(profile, allWorkouts, activeProfile) : [],
-    [profile, allWorkouts, activeProfile]
+    profile ? getMissedThisWeek(profile, allWorkouts, activeProfile, todayDate) : [],
+    [profile, allWorkouts, activeProfile, todayDate]
   );
 
   const dayCount = useMemo(() => {
@@ -447,6 +450,22 @@ export default function App() {
     await addDoc(collection(db, 'foodLogs'), rest);
     clearTimeout(undoData.timer);
     setUndoData(null);
+  }
+
+  async function updateFoodLog(log, newAmount) {
+    const amt = Number(newAmount);
+    if (!amt || amt <= 0) return;
+    const saved = savedFoods.find(f => f.id === log.foodId);
+    const per = saved?.perUnit
+      ? saved.perUnit
+      : { calories: log.calories / log.amount, protein: log.protein / log.amount, fat: log.fat / log.amount, carbs: log.carbs / log.amount };
+    await updateDoc(doc(db, 'foodLogs', log.id), {
+      amount: amt,
+      calories: per.calories * amt,
+      protein: per.protein * amt,
+      fat: per.fat * amt,
+      carbs: per.carbs * amt
+    });
   }
 
   async function logWeight(weight) {
@@ -656,6 +675,7 @@ export default function App() {
           onAddFood={() => { setPrefillFood(null); setShowFoodEntry(true); }}
           onQuickAdd={(f) => { setPrefillFood(f); setShowFoodEntry(true); }}
           onDeleteFood={deleteFood}
+          onEditFood={(log) => setEditingLog(log)}
           onLogWeight={logWeight}
           onStartWorkout={() => setShowWorkoutLogger(true)}
           onOpenSettings={() => setView('settings')}
@@ -668,6 +688,11 @@ export default function App() {
             const day = profile?.plan?.trainingDays.find(d => d.dayName === workoutDraft.dayName);
             if (day) { if (day === todaysDay) setShowWorkoutLogger(true); else setMakeupDay(day); }
           }}
+          onReopenWorkout={() => {
+            const saved = allWorkouts.find(w => w.profileId === activeProfile && w.date === todayDate && w.dayName === todaysDay?.dayName);
+            if (saved) setReopenSeed(saved);
+          }}
+          todayDate={todayDate}
           greenDaysData={greenDaysData}
           goodWeeksData={goodWeeksData}
           disneyDays={daysUntilDisney()}
@@ -706,6 +731,10 @@ export default function App() {
 
       {makeupDay && (
         <WorkoutLogger day={makeupDay} onClose={() => { setMakeupDay(null); clearDraft(); }} onSave={(logged) => { saveWorkout(logged, makeupDay.dayName); setMakeupDay(null); clearDraft(); }} allWorkouts={allWorkouts} activeProfile={activeProfile} draftLogged={workoutDraft?.profileId === activeProfile && workoutDraft?.dayName === makeupDay?.dayName ? workoutDraft.logged : null} onDraftChange={(logged) => saveDraft({ profileId: activeProfile, dayName: makeupDay.dayName, logged })} />
+      )}
+
+      {reopenSeed && todaysDay && (
+        <WorkoutLogger day={todaysDay} onClose={() => setReopenSeed(null)} onSave={(logged) => { saveWorkout(logged, todaysDay.dayName); setReopenSeed(null); clearDraft(); }} allWorkouts={allWorkouts} activeProfile={activeProfile} seedLogged={reopenSeed.exercises} />
       )}
 
       {showLastWorkouts && (
@@ -748,6 +777,16 @@ export default function App() {
 
       {showMacros && (
         <MacrosSheet profile={profile} onClose={() => setShowMacros(false)} onSave={(m) => { updateMacros(m); setShowMacros(false); }} />
+      )}
+
+      {editingLog && (
+        <EditLogSheet
+          log={editingLog}
+          savedFoods={savedFoods}
+          onClose={() => setEditingLog(null)}
+          onSave={(amt) => { updateFoodLog(editingLog, amt); setEditingLog(null); }}
+          onDelete={() => { deleteFood(editingLog); setEditingLog(null); }}
+        />
       )}
 
       {sharePortionFood && (
@@ -875,7 +914,7 @@ function getFoodSummary(food) {
 // HOME PAGE
 // ============================================================
 
-function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, savedFoods, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, onPickAnyDay, workoutDraft, onResumeWorkout, greenDaysData, goodWeeksData, disneyDays, disneyWeeks }) {
+function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, consumed, foods, weights, yesterdayWeight, todaysDay, workoutDone, dayCount, savedFoods, onToggleProfile, onAddFood, onQuickAdd, onDeleteFood, onEditFood, onLogWeight, onStartWorkout, onOpenSettings, missedThisWeek, onStartMakeup, onPickAnyDay, onReopenWorkout, workoutDraft, onResumeWorkout, greenDaysData, goodWeeksData, disneyDays, disneyWeeks, todayDate }) {
   const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const accent = profile.id === 'jose' ? '#64d2ff' : '#ff8b9b';
   const today = weights[0];
@@ -985,14 +1024,14 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
       )}
       {todaysDay && workoutDone && (
         <div style={{ padding: '8px 16px 0' }}>
-          <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(48,209,88,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#1c1c1e', borderRadius: 14, display: 'flex', alignItems: 'center', overflow: 'hidden' }}>
+            <button onClick={onReopenWorkout} style={{ flex: 1, background: 'none', border: 'none', padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit', textAlign: 'left' }}>
+              <div style={{ width: 28, height: 28, borderRadius: 14, background: 'rgba(48,209,88,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#30d158" strokeWidth="3" strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
               </div>
               <div style={{ fontSize: 15, fontWeight: 500, opacity: 0.7 }}>{todaysDay.dayName} day · Logged</div>
-            </div>
-            <button onClick={onPickAnyDay} className="ios-btn-text" style={{ fontSize: 13 }}>+ Other</button>
+            </button>
+            <button onClick={onPickAnyDay} className="ios-btn-text" style={{ fontSize: 13, paddingRight: 16 }}>+ Other</button>
           </div>
         </div>
       )}
@@ -1091,7 +1130,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
         <div className="ios-group">
           {/* Logged foods */}
           {foods.map(f => (
-            <div key={f.id} className="ios-row">
+            <button key={f.id} className="ios-row-button" onClick={() => onEditFood(f)}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 15, fontWeight: 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.foodName}</div>
                 <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
@@ -1101,12 +1140,8 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
                   } · {Math.round(f.calories)} cal
                 </div>
               </div>
-              <button onClick={() => onDeleteFood(f)} style={{ background: 'none', border: 'none', color: '#ff453a', padding: 4, cursor: 'pointer', marginLeft: 12 }}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <circle cx="12" cy="12" r="10"/><line x1="8" y1="12" x2="16" y2="12"/>
-                </svg>
-              </button>
-            </div>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </button>
           ))}
           {/* Add food */}
           <button onClick={onAddFood} className="ios-row-button">
@@ -1125,7 +1160,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
       <div style={{ padding: '0 16px' }}>
         <div className="ios-group">
           <div className="ios-row">
-            <WeightInput today={today} yesterday={yesterdayWeight} onSave={onLogWeight} />
+            <WeightInput today={today} yesterday={yesterdayWeight} onSave={onLogWeight} history={weights} />
           </div>
         </div>
       </div>
@@ -1135,9 +1170,9 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
         <>
           <div className="ios-label">{partner.name} Today</div>
           <div style={{ padding: '0 16px' }}>
-            <button onClick={onToggleProfile} className="ios-group" style={{ width: '100%', border: 'none', textAlign: 'left', color: 'inherit', fontFamily: 'inherit', cursor: 'pointer', padding: 0, display: 'block' }}>
-              <PartnerSummary partner={partner} partnerId={partner.id} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts} />
-            </button>
+            <div className="ios-group">
+              <PartnerSummary partner={partner} partnerId={partner.id} allFoodLogs={allFoodLogs} allWeightLogs={allWeightLogs} allWorkouts={allWorkouts} todayDate={todayDate} />
+            </div>
           </div>
         </>
       )}
@@ -1194,7 +1229,7 @@ function HomePage({ profile, partner, allFoodLogs, allWeightLogs, allWorkouts, c
   );
 }
 
-function WeightInput({ today, yesterday, onSave }) {
+function WeightInput({ today, yesterday, onSave, history = [] }) {
   const [val, setVal] = useState(today?.weight?.toString() || '');
   const [focused, setFocused] = useState(false);
   useEffect(() => { setVal(today?.weight?.toString() || ''); }, [today]);
@@ -1205,12 +1240,17 @@ function WeightInput({ today, yesterday, onSave }) {
   }
 
   const trend = (() => {
-    if (!today || !yesterday) return null;
-    const diff = today.weight - yesterday;
-    if (Math.abs(diff) < 0.1) return null;
+    const valid = history.filter(w => typeof w.weight === 'number');
+    if (valid.length < 4) return null;
+    const last7 = valid.slice(0, 7);
+    const prior7 = valid.slice(7, 14);
+    if (last7.length < 2 || prior7.length < 2) return null;
+    const avg = arr => arr.reduce((s, w) => s + w.weight, 0) / arr.length;
+    const diff = avg(last7) - avg(prior7);
+    if (Math.abs(diff) < 0.1) return { arrow: '–', color: 'rgba(235,235,245,0.5)', label: 'steady' };
     return diff < 0
-      ? { arrow: '↓', color: '#30d158', label: diff.toFixed(1) }
-      : { arrow: '↑', color: '#ff453a', label: `+${diff.toFixed(1)}` };
+      ? { arrow: '↓', color: '#30d158', label: `${Math.abs(diff).toFixed(1)} lb this week` }
+      : { arrow: '↑', color: '#ff9f0a', label: `${diff.toFixed(1)} lb this week` };
   })();
 
   return (
@@ -1219,7 +1259,7 @@ function WeightInput({ today, yesterday, onSave }) {
         <div style={{ fontSize: 15 }}>Weight</div>
         {trend && (
           <div className="ios-num" style={{ fontSize: 12, color: trend.color, marginTop: 1 }}>
-            {trend.arrow} {trend.label} lb from yesterday
+            {trend.arrow} {trend.label}
           </div>
         )}
       </div>
@@ -1246,15 +1286,19 @@ function WeightInput({ today, yesterday, onSave }) {
   );
 }
 
-function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWorkouts }) {
+function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWorkouts, todayDate }) {
   if (!partner) return null;
   const accent = partnerId === 'jose' ? '#64d2ff' : '#ff8b9b';
   const foods = allFoodLogs.filter(f => f.profileId === partnerId);
   const weights = allWeightLogs.filter(w => w.profileId === partnerId).sort((a, b) => b.date.localeCompare(a.date));
   const totalCal = foods.reduce((s, f) => s + (f.calories || 0), 0);
+  const totalProtein = foods.reduce((s, f) => s + (f.protein || 0), 0);
+  const totalFat = foods.reduce((s, f) => s + (f.fat || 0), 0);
+  const totalCarbs = foods.reduce((s, f) => s + (f.carbs || 0), 0);
   const today = weights[0];
-  const todaysDay = partner.plan.trainingDays.find(d => d.dayOfWeek === new Date().getDay());
-  const workoutDone = allWorkouts.some(w => w.profileId === partnerId && w.date === todayStr() && w.dayName === todaysDay?.dayName);
+  const todayDow = parseLocalDate(todayDate).getDay();
+  const todaysDay = partner.plan.trainingDays.find(d => d.dayOfWeek === todayDow);
+  const workoutDone = allWorkouts.some(w => w.profileId === partnerId && w.date === todayDate && w.dayName === todaysDay?.dayName);
 
   return (
     <>
@@ -1262,6 +1306,12 @@ function PartnerSummary({ partner, partnerId, allFoodLogs, allWeightLogs, allWor
         <div style={{ fontSize: 15 }}>Calories</div>
         <div className="ios-num" style={{ fontSize: 17 }}>
           {Math.round(totalCal)}<span style={{ color: 'rgba(235,235,245,0.5)', fontSize: 13 }}> / {partner.macros.calories}</span>
+        </div>
+      </div>
+      <div className="ios-row" style={{ borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+        <div style={{ fontSize: 15 }}>Macros</div>
+        <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.6)' }}>
+          P {Math.round(totalProtein)} · F {Math.round(totalFat)} · C {Math.round(totalCarbs)}
         </div>
       </div>
       <div className="ios-row" style={{ borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
@@ -1687,10 +1737,120 @@ function SharePortionSheet({ food, yourAmount, partner, lastPartnerPortion, onCl
 }
 
 // ============================================================
+// EDIT LOG SHEET
+// ============================================================
+
+function EditLogSheet({ log, savedFoods, onClose, onSave, onDelete }) {
+  const logAmount = log.amount ?? log.grams ?? 1;
+  const [amount, setAmount] = useState(logAmount);
+
+  const syntheticFood = useMemo(() => {
+    const amt = log.amount || 0;
+    let perUnit;
+    if (amt > 0) {
+      perUnit = {
+        calories: (log.calories || 0) / amt,
+        protein: (log.protein || 0) / amt,
+        fat: (log.fat || 0) / amt,
+        carbs: (log.carbs || 0) / amt
+      };
+    } else {
+      const saved = savedFoods.find(f => f.id === log.foodId);
+      perUnit = saved?.perUnit || { calories: 0, protein: 0, fat: 0, carbs: 0 };
+    }
+    return { name: log.foodName, unitType: log.unitType || 'weight', unitName: log.unitName || 'g', perUnit };
+  }, [log, savedFoods]);
+
+  const chips = getPortionChips(syntheticFood);
+  const unitLabel = getFoodUnitLabel(syntheticFood);
+  const amt = Number(amount);
+  const fracSub = syntheticFood.unitName === 'cup' ? formatFraction(amt) : null;
+  const step = syntheticFood.unitType === 'weight' ? '1' : '0.25';
+  const cal = amt > 0 ? Math.round(syntheticFood.perUnit.calories * amt) : 0;
+  const prot = amt > 0 ? (syntheticFood.perUnit.protein * amt).toFixed(1) : '0';
+  const fat = amt > 0 ? (syntheticFood.perUnit.fat * amt).toFixed(1) : '0';
+  const carbs = amt > 0 ? (syntheticFood.perUnit.carbs * amt).toFixed(1) : '0';
+  const foodTitle = syntheticFood.name.length > 22 ? syntheticFood.name.slice(0, 21) + '…' : syntheticFood.name;
+
+  return (
+    <div className="ios-modal-backdrop" onClick={onClose}>
+      <div className="ios-sheet" onClick={e => e.stopPropagation()}>
+        <div className="ios-grabber" />
+        <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+          <button onClick={onClose} className="ios-btn-text">Cancel</button>
+          <div style={{ fontSize: 17, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }}>{foodTitle}</div>
+          <div style={{ width: 60 }} />
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px 16px' }}>
+          <div style={{ background: '#1c1c1e', borderRadius: 14, padding: '20px 16px', textAlign: 'center' }}>
+            <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'rgba(235,235,245,0.5)', fontWeight: 600, marginBottom: 8 }}>{unitLabel}</div>
+            <input
+              type="number" inputMode="decimal" step={step} value={amount}
+              onChange={e => setAmount(e.target.value)}
+              className="ios-num"
+              style={{ background: 'transparent', border: 'none', outline: 'none', color: '#fff', fontSize: 48, fontWeight: 700, textAlign: 'center', width: '100%', caretColor: '#0a84ff', letterSpacing: '-0.03em' }}
+              autoFocus
+            />
+            {fracSub && fracSub !== String(amt) && (
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
+                {fracSub} {amt === 1 ? 'cup' : 'cups'}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'center', flexWrap: 'wrap', marginTop: 14 }}>
+              {chips.map(chip => (
+                <button key={chip.value} onClick={() => setAmount(chip.value)}
+                  className={`ios-chip ${Number(amount) === chip.value ? 'ios-chip-selected' : ''}`}>
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {amt > 0 && (
+            <div style={{ marginTop: 16, padding: '12px 16px', background: 'rgba(120,120,128,0.12)', borderRadius: 12, display: 'flex', justifyContent: 'space-between' }}>
+              {[{ l: 'Cal', v: cal }, { l: 'Protein', v: prot }, { l: 'Fat', v: fat }, { l: 'Carbs', v: carbs }].map(m => (
+                <div key={m.l} style={{ textAlign: 'center' }}>
+                  <div style={{ fontSize: 11, color: 'rgba(235,235,245,0.5)' }}>{m.l}</div>
+                  <div className="ios-num" style={{ fontSize: 17, fontWeight: 600, marginTop: 2 }}>{m.v}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div style={{ padding: 16, borderTop: '0.5px solid rgba(84,84,88,0.35)' }}>
+          <button onClick={() => onSave(amt)} disabled={!amt || amt <= 0} className="ios-btn-primary">Save</button>
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <button onClick={onDelete} style={{ background: 'none', border: 'none', color: '#ff453a', fontSize: 17, cursor: 'pointer', fontFamily: 'inherit', padding: '8px 4px' }}>Delete</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // WORKOUT LOGGER (Apple-styled)
 // ============================================================
 
-function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile = '', draftLogged = null, onDraftChange }) {
+function playChirp() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = 880; osc.type = 'sine';
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.3, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.35);
+    osc.start(); osc.stop(ctx.currentTime + 0.36);
+    osc.onended = () => ctx.close();
+  } catch {}
+}
+
+function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile = '', draftLogged = null, onDraftChange, seedLogged = null }) {
   const [exerciseIdx, setExerciseIdx] = useState(0);
   const [activeSetIdx, setActiveSetIdx] = useState(0);
 
@@ -1707,12 +1867,26 @@ function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile =
     return map;
   }, [allWorkouts, activeProfile]);
 
-  const [logged, setLogged] = useState(() =>
-    draftLogged || day.exercises.map(ex => ({
+  const [logged, setLogged] = useState(() => {
+    if (draftLogged) return draftLogged;
+    if (seedLogged) {
+      return day.exercises.map(ex => {
+        const saved = seedLogged.find(s => s.exerciseId === ex.id);
+        if (saved) return {
+          exerciseId: ex.id, name: ex.name, prescribedWeight: ex.weight, progression: ex.progression, compound: ex.compound,
+          sets: saved.sets.map(s => ({ weight: s.weight, reps: s.reps })), rpe: saved.rpe
+        };
+        return {
+          exerciseId: ex.id, name: ex.name, prescribedWeight: ex.weight, progression: ex.progression, compound: ex.compound,
+          sets: Array.from({ length: ex.sets }, () => ({ weight: null, reps: null })), rpe: null
+        };
+      });
+    }
+    return day.exercises.map(ex => ({
       exerciseId: ex.id, name: ex.name, prescribedWeight: ex.weight, progression: ex.progression, compound: ex.compound,
-      sets: Array.from({ length: ex.sets }, () => ({ weight: null, reps: null })), rpe: 7
-    }))
-  );
+      sets: Array.from({ length: ex.sets }, () => ({ weight: null, reps: null })), rpe: null
+    }));
+  });
   const [restTimer, setRestTimer] = useState(0);
   const [restActive, setRestActive] = useState(false);
   const restRef = useRef(null);
@@ -1721,7 +1895,12 @@ function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile =
 
   useEffect(() => {
     if (!restActive) return;
-    restRef.current = setInterval(() => setRestTimer(t => { if (t <= 1) { setRestActive(false); return 0; } return t - 1; }), 1000);
+    restRef.current = setInterval(() => {
+      setRestTimer(t => {
+        if (t <= 1) { playChirp(); setRestActive(false); return 0; }
+        return t - 1;
+      });
+    }, 1000);
     return () => clearInterval(restRef.current);
   }, [restActive]);
 
@@ -1972,7 +2151,7 @@ function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile =
               <div className="ios-num" style={{ fontSize: 22, fontWeight: 600 }}>{currentLog.rpe ?? '—'}</div>
             </div>
             <input
-              type="range" min="1" max="10" step="1" value={currentLog.rpe ?? 7}
+              type="range" min="1" max="10" step="1" value={currentLog.rpe ?? 5}
               onChange={e => setRpe(Number(e.target.value))}
               style={{ width: '100%', accentColor: '#0a84ff' }}
             />
@@ -1999,8 +2178,7 @@ function WorkoutLogger({ day, onClose, onSave, allWorkouts = [], activeProfile =
 }
 
 function shortenExName(name) {
-  // Smart abbreviations for pill display
-  return name
+  const r = name
     .replace(/Smith /g, '')
     .replace(/Cable /g, '')
     .replace(/Bayesian /g, '')
@@ -2021,6 +2199,7 @@ function shortenExName(name) {
     .replace(/Face Pull/g, 'Face Pull')
     .replace(/Incline DB Curl/g, 'Curl')
     .trim();
+  return r.length > 14 ? r.slice(0, 13) + '…' : r;
 }
 
 // ============================================================
@@ -2107,10 +2286,63 @@ function DayPickerSheet({ plan, onClose, onPick }) {
   );
 }
 
+function ExerciseEditSheet({ exercise, onClose, onSave, onRemove }) {
+  const [name, setName] = useState(exercise?.name || '');
+  const [sets, setSets] = useState(exercise?.sets?.toString() || '');
+  const [repLow, setRepLow] = useState(exercise?.repLow?.toString() || '');
+  const [repHigh, setRepHigh] = useState(exercise?.repHigh?.toString() || '');
+  const [note, setNote] = useState(exercise?.note || '');
+  const canSave = name.trim() && Number(sets) >= 1;
+
+  return (
+    <div className="ios-modal-backdrop" onClick={onClose}>
+      <div className="ios-sheet" onClick={e => e.stopPropagation()}>
+        <div className="ios-grabber" />
+        <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
+          <button onClick={onClose} className="ios-btn-text">Cancel</button>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>{exercise ? 'Edit Exercise' : 'Add Exercise'}</div>
+          <button onClick={() => canSave && onSave({ name: name.trim(), sets: Number(sets), repLow: Number(repLow) || 1, repHigh: Number(repHigh) || Number(repLow) || 1, note: note.trim() || undefined })} disabled={!canSave} className="ios-btn-text" style={{ fontWeight: 600, opacity: canSave ? 1 : 0.35 }}>Save</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 24px' }}>
+          <div className="ios-group">
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Name</div>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="Required" className="ios-input" style={{ textAlign: 'right', flex: 1, maxWidth: '60%' }} autoFocus />
+            </div>
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Sets</div>
+              <input type="number" inputMode="numeric" value={sets} onChange={e => setSets(e.target.value)} placeholder="3" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+            </div>
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Rep low</div>
+              <input type="number" inputMode="numeric" value={repLow} onChange={e => setRepLow(e.target.value)} placeholder="8" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+            </div>
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Rep high</div>
+              <input type="number" inputMode="numeric" value={repHigh} onChange={e => setRepHigh(e.target.value)} placeholder="12" className="ios-input ios-num" style={{ textAlign: 'right', maxWidth: 80 }} />
+            </div>
+            <div className="ios-row">
+              <div style={{ fontSize: 15, color: 'rgba(235,235,245,0.6)' }}>Note</div>
+              <input value={note} onChange={e => setNote(e.target.value)} placeholder="Optional" className="ios-input" style={{ textAlign: 'right', flex: 1, maxWidth: '60%' }} />
+            </div>
+          </div>
+          {exercise && onRemove && (
+            <div style={{ marginTop: 24, textAlign: 'center' }}>
+              <button onClick={onRemove} style={{ background: 'none', border: 'none', color: '#ff453a', fontSize: 17, cursor: 'pointer', fontFamily: 'inherit', padding: '8px 4px' }}>Remove exercise</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PlanEditorPage({ profile, onBack, onSave }) {
   const [plan, setPlan] = useState(() => JSON.parse(JSON.stringify(profile.plan)));
   const [saving, setSaving] = useState(false);
   const [dragging, setDragging] = useState(null); // { dayIdx, exIdx }
+  const [editingExercise, setEditingExercise] = useState(null); // { dayIdx, exIdx }
+  const [addingExercise, setAddingExercise] = useState(null); // { dayIdx }
   const rowRefs = useRef({});
   const dragCtx = useRef(null);
   const planRef = useRef(plan);
@@ -2187,14 +2419,13 @@ function PlanEditorPage({ profile, onBack, onSave }) {
                     ref={el => { rowRefs.current[`${dayIdx}-${exIdx}`] = el; }}
                     style={{
                       display: 'flex', alignItems: 'center',
-                      padding: '10px 12px',
                       background: isDragged ? 'rgba(10,132,255,0.10)' : 'transparent',
                       borderBottom: exIdx < day.exercises.length - 1 ? '0.5px solid rgba(84,84,88,0.35)' : undefined,
                     }}
                   >
                     <div
                       onPointerDown={e => onDragStart(e, dayIdx, exIdx)}
-                      style={{ padding: '8px 14px 8px 4px', cursor: 'grab', touchAction: 'none', color: 'rgba(235,235,245,0.35)', userSelect: 'none', flexShrink: 0 }}
+                      style={{ padding: '14px 10px 14px 12px', cursor: 'grab', touchAction: 'none', color: 'rgba(235,235,245,0.35)', userSelect: 'none', flexShrink: 0 }}
                     >
                       <svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor">
                         <rect y="0" width="16" height="2" rx="1"/>
@@ -2202,19 +2433,77 @@ function PlanEditorPage({ profile, onBack, onSave }) {
                         <rect y="10" width="16" height="2" rx="1"/>
                       </svg>
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ex.name}</div>
-                      <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>
-                        {ex.sets} × {ex.repLow}–{ex.repHigh} · {ex.weight} lb
+                    <button
+                      onClick={() => setEditingExercise({ dayIdx, exIdx })}
+                      style={{ flex: 1, background: 'none', border: 'none', color: 'inherit', textAlign: 'left', cursor: 'pointer', padding: '10px 14px 10px 0', fontFamily: 'inherit', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 15, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ex.name}</div>
+                        <div className="ios-num" style={{ fontSize: 12, color: 'rgba(235,235,245,0.5)', marginTop: 1 }}>
+                          {ex.sets} × {ex.repLow}–{ex.repHigh}{ex.note ? ' · ' + ex.note : ''}
+                        </div>
                       </div>
-                    </div>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginLeft: 8 }}><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
                   </div>
                 );
               })}
+              <button onClick={() => setAddingExercise({ dayIdx })} className="ios-row-button">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{ width: 28, height: 28, borderRadius: 14, background: '#0a84ff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  </div>
+                  <span style={{ fontSize: 17, color: '#0a84ff' }}>Add Exercise</span>
+                </div>
+              </button>
             </div>
           </div>
         ))}
       </div>
+
+      {editingExercise && (() => {
+        const { dayIdx, exIdx } = editingExercise;
+        const ex = plan.trainingDays[dayIdx].exercises[exIdx];
+        return (
+          <ExerciseEditSheet
+            exercise={ex}
+            onClose={() => setEditingExercise(null)}
+            onSave={fields => {
+              setPlan(prev => {
+                const next = JSON.parse(JSON.stringify(prev));
+                next.trainingDays[dayIdx].exercises[exIdx] = { ...ex, ...fields };
+                return next;
+              });
+              setEditingExercise(null);
+            }}
+            onRemove={() => {
+              setPlan(prev => {
+                const next = JSON.parse(JSON.stringify(prev));
+                next.trainingDays[dayIdx].exercises.splice(exIdx, 1);
+                return next;
+              });
+              setEditingExercise(null);
+            }}
+          />
+        );
+      })()}
+
+      {addingExercise && (
+        <ExerciseEditSheet
+          exercise={null}
+          onClose={() => setAddingExercise(null)}
+          onSave={fields => {
+            setPlan(prev => {
+              const next = JSON.parse(JSON.stringify(prev));
+              next.trainingDays[addingExercise.dayIdx].exercises.push({
+                id: crypto.randomUUID(), ...fields, weight: 0, progression: 'load', compound: false
+              });
+              return next;
+            });
+            setAddingExercise(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2227,7 +2516,7 @@ function MacrosSheet({ profile, onClose, onSave }) {
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
           <button onClick={onClose} className="ios-btn-text">Cancel</button>
           <div style={{ fontSize: 17, fontWeight: 600 }}>Macros</div>
-          <button onClick={() => onSave({ calories: Number(m.calories), protein: Number(m.protein), fat: Number(m.fat), carbs: Number(m.carbs) })} className="ios-btn-text" style={{ fontWeight: 600 }}>Save</button>
+          <button onClick={() => onSave({ calories: Number(m.calories), protein: Number(m.protein), fat: Number(m.fat), carbs: Number(m.carbs) })} disabled={!m.calories || Number(m.calories) < 1} className="ios-btn-text" style={{ fontWeight: 600, opacity: (!m.calories || Number(m.calories) < 1) ? 0.35 : 1 }}>Save</button>
         </div>
         <div style={{ padding: '16px 16px 24px' }}>
           <div className="ios-group">
