@@ -9,7 +9,7 @@ import {
 // SEED DATA (used only on first launch)
 // ============================================================
 
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 
 const DISNEY_DATE = '2026-08-22';
 const TRACKER_START = '2026-05-23';     // green days start counting from here
@@ -84,6 +84,12 @@ function toLocalDateStr(d) {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+// Parse a stored YYYY-MM-DD string as local midnight (not UTC) to avoid off-by-one in Central time.
+function parseLocalDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(y, m - 1, d);
 }
 
 function todayStr() {
@@ -223,18 +229,6 @@ export default function App() {
     let active = true;
     (async () => {
       await ensureAuth();
-
-      // Migration: delete all old-shape saved foods (have per100g, missing perUnit) and re-seed
-      const savedFoodsSnap = await getDocs(collection(db, 'savedFoods'));
-      const needsMigration = savedFoodsSnap.docs.some(d => d.data().per100g && !d.data().perUnit);
-      if (needsMigration) {
-        for (const d of savedFoodsSnap.docs) {
-          await deleteDoc(doc(db, 'savedFoods', d.id));
-        }
-        for (const food of SEED_FOODS) {
-          await addDoc(collection(db, 'savedFoods'), { ...food, createdAt: serverTimestamp() });
-        }
-      }
 
       // Check if household doc exists; seed if not (first launch)
       const hhRef = doc(db, 'household', 'main');
@@ -454,9 +448,9 @@ export default function App() {
 
   async function undoDelete() {
     if (!undoData) return;
-    // Re-add the food log with its previous data (but new id)
+    // Re-add with the original loggedAt so it stays in its original position
     const { id, ...rest } = undoData.food;
-    await addDoc(collection(db, 'foodLogs'), { ...rest, loggedAt: serverTimestamp() });
+    await addDoc(collection(db, 'foodLogs'), rest);
     clearTimeout(undoData.timer);
     setUndoData(null);
   }
@@ -474,7 +468,8 @@ export default function App() {
   }
 
   async function saveWorkout(loggedExercises, dayName) {
-    await addDoc(collection(db, 'workouts'), {
+    const docId = `${activeProfile}_${todayDate}_${dayName.replace(/\s+/g, '')}`;
+    await setDoc(doc(db, 'workouts', docId), {
       profileId: activeProfile,
       date: todayDate,
       dayName: dayName,
@@ -1193,6 +1188,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
   const [amount, setAmount] = useState(prefillFood?.defaultAmount || 1);
   // New / edit food
   const [creating, setCreating] = useState(!!editingFood);
+  const [saving, setSaving] = useState(false);
   const [newFood, setNewFood] = useState(() => {
     if (editingFood) {
       // Show macros for one default portion (perUnit × defaultAmount)
@@ -1311,25 +1307,29 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
 
     async function saveNew() {
       const { name, unitType, unitName, calories, protein, fat, carbs, defaultAmount } = newFood;
-      if (!name || !calories) return;
-      // perUnit = macros entered / defaultAmount (the serving size that defines those macros)
-      const portion = Number(defaultAmount) || 1;
-      const perUnit = {
-        calories: Number(calories) / portion,
-        protein: Number(protein || 0) / portion,
-        fat: Number(fat || 0) / portion,
-        carbs: Number(carbs || 0) / portion
-      };
-      const foodData = { name, unitType, unitName, perUnit, defaultAmount: portion };
-      if (editingFood) {
-        await onUpdateExisting(editingFood.id, foodData);
-        onClose();
-      } else {
-        const created = await onCreateNew(foodData);
-        setSelected(created);
-        setAmount(portion);
-        setCreating(false);
-        setStage('portion');
+      if (!name || !calories || saving) return;
+      setSaving(true);
+      try {
+        const portion = Number(defaultAmount) || 1;
+        const perUnit = {
+          calories: Number(calories) / portion,
+          protein: Number(protein || 0) / portion,
+          fat: Number(fat || 0) / portion,
+          carbs: Number(carbs || 0) / portion
+        };
+        const foodData = { name, unitType, unitName, perUnit, defaultAmount: portion };
+        if (editingFood) {
+          await onUpdateExisting(editingFood.id, foodData);
+          onClose();
+        } else {
+          const created = await onCreateNew(foodData);
+          setSelected(created);
+          setAmount(portion);
+          setCreating(false);
+          setStage('portion');
+        }
+      } finally {
+        setSaving(false);
       }
     }
 
@@ -1342,7 +1342,7 @@ function FoodEntryModal({ onClose, savedFoods, prefillFood, editingFood, activeP
         <div style={{ padding: '12px 16px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid rgba(84,84,88,0.35)' }}>
           <button onClick={() => editingFood ? onClose() : setCreating(false)} className="ios-btn-text">{editingFood ? 'Cancel' : 'Back'}</button>
           <div style={{ fontSize: 17, fontWeight: 600 }}>{editingFood ? 'Edit Food' : 'New Food'}</div>
-          <button onClick={saveNew} disabled={!newFood.name || !newFood.calories} className="ios-btn-text" style={{ fontWeight: 600 }}>Save</button>
+          <button onClick={saveNew} disabled={!newFood.name || !newFood.calories || saving} className="ios-btn-text" style={{ fontWeight: 600 }}>{saving ? 'Saving…' : 'Save'}</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px 24px' }}>
           <div className="ios-group">
@@ -1600,6 +1600,7 @@ function WorkoutLogger({ day, onClose, onSave }) {
   const [restActive, setRestActive] = useState(false);
   const restRef = useRef(null);
   const repsRefs = useRef({});
+  const repsFocusValueRef = useRef({});
 
   useEffect(() => {
     if (!restActive) return;
@@ -1631,11 +1632,18 @@ function WorkoutLogger({ day, onClose, onSave }) {
   function setRpe(rpe) { setLogged(prev => prev.map((l, i) => i === exerciseIdx ? { ...l, rpe } : l)); }
   function startRest() { setRestTimer(ex.compound ? 180 : 90); setRestActive(true); }
 
+  function handleRepsFocus(setIdx) {
+    repsFocusValueRef.current[setIdx] = currentLog.sets[setIdx].reps;
+  }
+
   function handleRepsBlur(setIdx) {
     const set = currentLog.sets[setIdx];
-    if (set.reps == null || set.reps <= 0) return;
+    const prevVal = repsFocusValueRef.current[setIdx];
+    const wasEmpty = prevVal == null || prevVal <= 0;
+    const isNowValid = set.reps != null && set.reps > 0;
+    // Only fire rest timer when transitioning from empty/invalid → valid
+    if (!wasEmpty || !isNowValid) return;
     startRest();
-    // Advance active set
     if (setIdx < currentLog.sets.length - 1) {
       setActiveSetIdx(setIdx + 1);
     }
@@ -1821,7 +1829,7 @@ function WorkoutLogger({ day, onClose, onSave }) {
                     ref={el => { if (el) repsRefs.current[i] = el; }}
                     type="number" inputMode="numeric" value={set.reps ?? ''}
                     onChange={e => updateSet(i, 'reps', e.target.value)}
-                    onFocus={() => setActiveSetIdx(i)}
+                    onFocus={() => { setActiveSetIdx(i); handleRepsFocus(i); }}
                     onBlur={() => handleRepsBlur(i)}
                     placeholder="0"
                     className="ios-num"
@@ -2080,7 +2088,7 @@ function LastWorkoutsSheet({ workouts, onClose }) {
           </div>
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px 16px 24px' }}>
             <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', textAlign: 'center', marginBottom: 16 }}>
-              {new Date(w.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+              {parseLocalDate(w.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </div>
             {w.exercises.map(ex => {
               const validSets = (ex.sets || []).filter(s => s.reps != null && s.reps > 0);
@@ -2131,7 +2139,7 @@ function LastWorkoutsSheet({ workouts, onClose }) {
                   <div>
                     <div style={{ fontSize: 15 }}>{w.dayName}</div>
                     <div className="ios-num" style={{ fontSize: 13, color: 'rgba(235,235,245,0.5)', marginTop: 2 }}>
-                      {new Date(w.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                      {parseLocalDate(w.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                     </div>
                   </div>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="rgba(235,235,245,0.3)" strokeWidth="2" strokeLinecap="round"><polyline points="9 18 15 12 9 6"/></svg>
